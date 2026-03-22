@@ -1,0 +1,84 @@
+
+// ****************************************************************************
+//
+//                                 VGA output
+//
+// ****************************************************************************
+
+#ifndef _GFX_H
+#define _GFX_H
+
+
+// fill memory buffer with uint32_t words
+//  buf ... data buffer, must be 32-bit aligned
+//  data ... data word to store
+//  num ... number of 32-bit words (= number of bytes/4)
+// Returns new destination address.
+extern "C" uint32_t* RenderColor(uint32_t* buf, uint32_t data, int num);
+
+// Blit scanline using font + color
+//  dst:		destination buffer
+//  src:		source buffer (char buffer)
+//  w:			width in chars
+//  color:		fgcolor
+//  fontdef:	font definition
+//  scroll:		scrollx
+extern "C" void TextBlitKey32(uint8_t* dst, uint8_t* src, int w, uint8_t fgcolor, uint8_t* fontdef, int scroll, int offset);
+extern "C" void TextBlitKey40(uint8_t* dst, uint8_t* src, int w, uint8_t fgcolor, uint8_t* fontdef, int scroll, int offset);
+extern "C" void TextBlitKey64(uint8_t* dst, uint8_t* src, int w, uint8_t fgcolor, uint8_t* fontdef, int scroll, int offset);
+extern "C" void TextBlitKey80(uint8_t* dst, uint8_t* src, int w, uint8_t fgcolor, uint8_t* fontdef, int scroll, int offset);
+
+// Blit scanline using font + color
+//  dst:		destination buffer
+//  src:		source buffer (char buffer)
+//  w:			width in chars
+//  fgcolorlut:	fgcolor 4bits lookup table
+//  fontdef:	font definition
+//  scroll:		scrollx
+extern "C" void TextBlit32(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
+extern "C" void TextBlit40(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
+extern "C" void TextBlit64(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
+extern "C" void TextBlit80(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
+
+
+// Blit scanline using 8x8 or 16x16 tile (+ bgcolor)
+//  dst:		destination buffer
+//  src:		source buffer (tile buffer)
+//  w:			width in tiles
+//  bgcolor:	background color
+//  tiledef:	tile definition
+//  scroll:		scrollx
+//  offset:		offset
+extern "C" void TileBlitKey8_32(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+extern "C" void TileBlitKey8_40(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+extern "C" void TileBlitKey8_80(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+
+extern "C" void TileBlit8_32(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+extern "C" void TileBlit8_40(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+extern "C" void TileBlit8_80(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+
+extern "C" void TileBlitKey16_16(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+extern "C" void TileBlitKey16_20(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+extern "C" void TileBlitKey16_40(uint8_t* dst, uint8_t* src, int w, uint8_t bgcolor, uint8_t* tiledef, int scroll, int offset);
+
+// Blit scanmine sprites (16x24)
+//  sprnb:		number of sprites
+//  w:			width in pixels
+//  scanline:	current scanline
+//  sprdata:	source buffer (sprite data buffer)
+//  sprdef:	    sprite definition base
+//  dst:		destination buffer
+extern "C" void Sprite16(int sprnb, int w, int scanline, uint8_t* sprdata, uint8_t* sprdef, uint8_t* dst);
+
+// key blit scanline from source
+//  dst: 		destination buffer
+//  src:		source buffer
+//  w:			width in pixels
+//  scroll:     scrollx
+//  offset:     offset  
+extern "C" void LineBlitKey32(uint8_t* dst, uint8_t* src, int w, int scroll, int offset);
+extern "C" void LineBlitKey40(uint8_t* dst, uint8_t* src, int w, int scroll, int offset);
+extern "C" void LineBlit80(uint8_t* dst, uint8_t* src, int w, int scroll, int offset);
+
+
+#endif // _GFX_H

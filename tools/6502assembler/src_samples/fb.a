@@ -1,0 +1,59 @@
+!to "fb.bin"
+
+reloc = $0800
+
+;*= $0401
+;        * = $0401
+;        !word bas_end
+;        !word $00
+;        !byte $9e
+;        !text "2048"
+;        !byte $00
+;bas_end !word $00
+;
+;*= $0800
+;        jmp move
+
+*= $a000
+
+move:
+        ldx #0
+relocate:        
+        lda start+$100*0,x
+        sta reloc+$100*0,x
+        lda start+$100*1,x
+        sta reloc+$100*1,x
+        lda start+$100*2,x
+        sta reloc+$100*2,x
+        lda start+$100*3,x
+        sta reloc+$100*3,x
+        lda start+$100*4,x
+        sta reloc+$100*4,x
+        lda start+$100*5,x
+        sta reloc+$100*5,x
+        lda start+$100*6,x
+        sta reloc+$100*6,x
+        lda start+$100*7,x
+        sta reloc+$100*7,x
+        lda start+$100*8,x
+        sta reloc+$100*8,x
+        lda start+$100*9,x
+        sta reloc+$100*9,x
+        lda start+$100*10,x
+        sta reloc+$100*10,x
+        inx
+        bne relocate
+        cli
+        jmp reloc
+
+
+;*= $4000
+;*= $07fe
+start = add+2
+add:
+!bin "fb.prg"
+end
+
+
+
+

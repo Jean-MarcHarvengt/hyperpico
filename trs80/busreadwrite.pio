@@ -1,0 +1,68 @@
+
+.define public CONFIG_PIN_BUS_RD 8
+.define public CONFIG_PIN_BUS_WR 26
+;.define public RESET 28
+
+.program busread
+.side_set 1
+
+; Prerequisites:
+;  * IN/OUT pins are mapped to BUS_DATA_BASE (8 data lines transceiver)
+;  * SIDE pin mapped to DATADIR (data transceiver DIR)
+;  * SET pins are mapped to BUS_CONTROL_BASE (3 transceiver enable signals):
+;  * selecting AddrHi[7:0], AddrLo[7:0] or Data[7:0] on 8 data lines
+;  * run at about 280MHz (4ns/instruction)
+;
+; SET bits for tranceiver control:
+;  0bxxx
+;      x  - select AddrHi, active low
+;     x   - select AddrLo, active low
+;    x    - select Data, active low
+;
+
+;    wait 1 GPIO, CONFIG_PIN_BUS_RD side 0
+    set PINS, 0b111 side 0 
+.wrap_target
+skip:
+    set PINS, 0b111 side 0    
+
+    wait 0 GPIO, CONFIG_PIN_BUS_RD [1] side 0   ; wait for RD to fall
+    set PINS, 0b110 side 0 [4]                  ; enable AddrHi tranceiver
+    in PINS, 8      side 0                      ; read AddrHi[15:8] into ISR
+    set PINS, 0b101 side 0 [4]                  ; enable AddrLo tranceiver
+    in PINS, 8      side 0                      ; read AddrLo[7:0] into ISR
+
+    pull            side 0                      ; pull 32 bit in OSR (block till something there)
+    mov X, OSR      side 0                      ; save OSR in X for later
+    jmp !X,skip     side 0                      ; 0 means read not for us (not in pico read memory map)
+
+    set PINS, 0b011 side 1                      ; enable Data tranceiver; DATADIR out 
+    mov OSR, ~NULL  side 1                      ; change data pins as outputs (1)
+    out PINDIRS, 8  side 1 
+    
+    mov OSR, X      side 1                      ; read data from X
+    out PINS, 8     side 1                      ; output Data[7:0]
+
+    wait 1 GPIO, CONFIG_PIN_BUS_RD [1] side 1   ; wait for RD to rise 
+    ;nop             side 1 [4] ; 6
+    mov OSR, NULL   side 1                      ; change data pins as inputs (0)
+    out PINDIRS, 8  side 1 
+;    set PINS, 0b111 side 0    
+.wrap
+
+
+.program buswrite
+;    wait 1 GPIO, CONFIG_PIN_BUS_WR
+    set PINS, 0b111
+.wrap_target
+    wait 0 GPIO, CONFIG_PIN_BUS_WR [1]          ; wait for WR to fall
+    set PINS, 0b110  [4]                        ; enable AddrHi tranceiver
+    in PINS, 8                                  ; read AddrHi[15:8] into ISR <--- to left
+    set PINS, 0b101  [4]                        ; enable AddrLo tranceiver
+    in PINS, 8                                  ; read AddrLo[7:0] into ISR  <--- to left
+    set PINS, 0b011  [4]                        ; enable Data tranceiver
+    in PINS, 8                                  ; read Data[7:0] into ISR  <--- to left
+  
+    wait 1 GPIO, CONFIG_PIN_BUS_WR [1]             ; wait for WR to raise
+    set PINS, 0b111
+.wrap
