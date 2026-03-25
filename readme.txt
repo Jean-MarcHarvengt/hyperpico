@@ -26,7 +26,7 @@ Or try latest from https://developer.arm.com/downloads/-/arm-gnu-toolchain-downl
 Not working for me on M1!
 export PICO_TOOLCHAIN_PATH=/Users/jean-marcharvengt/Documents/pico/arm-gnu-toolchain-12.2.rel1-darwin-arm64-arm-none-eabi/bin
 
-Avoid brew executables on OSX as you only get latest version with seems problematic!
+Avoid brew executables on OSX as you only get latest version which seems problematic!
 
 
 # Compile the project (ARM)
