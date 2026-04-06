@@ -1,20 +1,554 @@
-#include "petbus.h"
+#include <string.h>
+#include <cstdlib>
+#include <ctype.h>
+
+#include "pico/multicore.h"
+#include "hardware/pio.h"
+#include "hardware/dma.h"
+#include "hardware/irq.h"
+
+#include "memmap.h" // contains config !!!
+
+extern "C" {
+  #include "iopins.h"   
+}
 
 #ifdef HAS_PETIO
 #include "petbus.pio.h"
 #endif
 
+#include "hypergfx.h"
+
+
+#include "edit4.h"
+#include "edit480.h"
+#include "edit450.h"
+#include "edit48050.h"
+
+#ifdef PETIO_A000
+#include "fb.h"
+//#include "vsync.h"
+#endif         
+
+#ifdef CPU_EMU
+// 6502 emu
+#include "mos6502.h"
+#include "basic4_b000.h"
+#include "basic4_c000.h"
+#include "basic4_d000.h"
+#include "kernal4.h"
+#include "hdmi_framebuffer.h"
+
+#ifdef HAS_USBHOST
+#include "bsp/board_api.h"
+#include "tusb.h"
+#include "kbd.h"
+extern "C" void hid_app_task(void);
+#else
+#include "usb_serial.h"
+#endif
+
+#define PET_MEMORY_SIZE 0x8000 // for 32k
+
+// 6502 emu
+static mos6502 mos;
+static uint8_t petram[PET_MEMORY_SIZE];
+static bool pet_running = true;
+static bool prg_start = false;
+static uint16_t prg_add_start;
+static uint16_t prg_add_cur;
+static uint16_t prg_wr = 0;
+static uint16_t prg_size = 0;
+
+static uint8_t _rows[0x10];
+static uint8_t _row;
+
+/*
+Professionnal keyboard map
+----+------------------------
+row |  7  6  5  4  3  2  1  0
+----+------------------------
+ 9  | 16 04 3A 03 39 36 33 DF
+    | ^V --  : ^C  9  6  3 <-   ^V = TAB + <- + DEL, ^C = STOP,
+    |                            <- = left arrow
+ 8  | B1 2F 15 13 4D 20 58 12
+    | k1  / ^U ^S  m sp  x ^R   k9 = keypad 9, ^U = RVS + A + L,
+    |                           ^S = HOME, sp = space, ^R = RVS
+ 7  | B2 10 0F B0 2C 4E 56 5A   ^O = Z + A + L, rp = repeat
+    | k2 rp ^O k0  ,  n  v  z
+    |
+ 6  | B3 00 19 AE 2E 42 43 00
+    | k3 rs ^Y k.  .  b  c ls   ^Y = left shift + TAB + I, k. = keypad .
+    |                           ls = left shift, rs = right shift
+ 5  | B4 DB 4F 11 55 54 45 51   ^Q = cursor down
+    | k4  [  o ^Q  u  t  e  q
+    |    5D]
+ 4  | 14 50 49 DC 59 52 57 09
+    | ^T  p  i  \  y  r  w ^I   ^T = DEL, ^I = TAB
+    |          C0@
+ 3  | B6 C0 4C 0D 4A 47 44 41
+    | k6  @  l ^M  j  g  d  a   ^M = return
+    |    5B[
+ 2  | B5 3B 4B DD 48 46 53 9B
+    | k5  ;  k  ]  h  f  s ^[   ^[ = ESC
+    |    5C\   3B;
+ 1  | B9 06 DE B7 B0 37 34 31
+    | k9 --  ^ k7  0  7  4  1
+    |
+ 0  | 05 0E 1D B8 2D 38 35 32
+    |  . ^N ^] k8  -  8  5  2   ^N = both shifts + 2, ^] = cursor right
+*/
+
+static const uint8_t asciimap[8*10] = {
+/*----+-----------------------------------------------*/
+/*row |   7     6     5     4     3     2     1     0 */
+/*----+-----------------------------------------------*/
+/* 9  |*/ 0x16, 0x04, 0x3A, 0x03, 0x39, 0x36, 0x33, 0xDF,
+/* 8  |*/ 0xB1, 0x2F, 0x15, 0x13, 0x4D, 0x20, 0x58, 0x12,
+/* 7  |*/ 0xB2, 0x10, 0x0F, 0xB0, 0x2C, 0x4E, 0x56, 0x5A,
+/* 6  |*/ 0xB3, 0x00, 0x19, 0xAE, 0x2E, 0x42, 0x43, 0x00,
+/* 5  |*/ 0xB4, 0xDB, 0x4F, 0x11, 0x55, 0x54, 0x45, 0x51,
+/* 4  |*/ 0x14, 0x50, 0x49, 0xDC, 0x59, 0x52, 0x57, 0x09,
+/* 3  |*/ 0xB6, 0xC0, 0x4C, 0x0D, 0x4A, 0x47, 0x44, 0x41,
+/* 2  |*/ 0xB5, 0x3B, 0x4B, 0xDD, 0x48, 0x46, 0x53, 0x9B,
+/* 1  |*/ 0xB9, 0x06, 0xDE, 0xB7, 0x30, 0x37, 0x34, 0x31,
+/* 0  |*/ 0x05, 0x0E, 0x1D, 0xB8, 0x2D, 0x38, 0x35, 0x32
+};
+
+#endif
+
+
 // PET shadow memory 8000-9fff
 // unsigned char *mem;
 // PET shadow memory a000-afff
 #ifdef PETIO_A000
-unsigned char mem_a000[0x1000];
+static unsigned char mem_a000[0x1000];
 #endif
 // PET shadow memory e000-a7ff
 #ifdef PETIO_EDIT
-unsigned char mem_e000[0x0800];
+static unsigned char mem_e000[0x0800];
 #endif
-bool font_lowercase = false;
+static bool got_reset = false;
+
+
+#ifdef CPU_EMU
+
+#ifdef HAS_USBHOST
+// ****************************************
+// USB keyboard
+// ****************************************
+static int prev_code=0;
+
+static uint8_t joystick0 = 0xff;
+static bool kbdasjoy = false;
+// Joystick macros
+#define JOY_UP      (1)
+#define JOY_DOWN    (2)
+#define JOY_LEFT    (4)
+#define JOY_RIGHT   (8) 
+#define JOY_FIRE    (1+2)
+#endif
+
+
+static void _set(uint8_t k) {
+  _rows[(k & 0xf0) >> 4] |= 1 << (k & 0x0f);
+}
+
+static void _reset(uint8_t k) {
+  _rows[(k & 0xf0) >> 4] &= ~(1 << (k & 0x0f));
+}
+
+static uint8_t ascii2rowcol(uint8_t chr) 
+{
+  uint8_t rowcol = 0;
+  for (int i=0;i<sizeof(asciimap); i++) {
+    if (asciimap[i] == chr) {
+      int col = 7-(i&7);
+      int row = 9-(i>>3);
+      rowcol = (row<<4)+col;
+      break;
+    }  
+  } 
+  return rowcol; 
+}  
+
+uint8_t readWord( uint16_t location)
+{
+  if (location < 0x8000)  {
+    if (location < PET_MEMORY_SIZE) {
+      return petram[location];
+    }
+    else {
+      return 0xff;
+    }  
+  }
+  else if (location < 0xa000) {
+    return HyperGfxRead(location);
+  }  
+  else if (location < 0xb000) {
+#ifdef PETIO_A000
+    return mem_a000[location-0xa000];
+#else
+    return 0;
+#endif    
+  }  
+  else if (location < 0xc000) {
+    return basic4_b000[location-0xb000];
+  }  
+  else if (location < 0xd000) {
+    return basic4_c000[location-0xc000];
+  }  
+  else if (location < 0xe000) {
+    return basic4_d000[location-0xd000];
+  } 
+  else if (location < 0xe800) {
+    if (HyperGfxIsPal()) { 
+      if (!HyperGfxIsHires())      
+        return edit450[location-0xe000];
+      else
+        return edit48050[location-0xe000];
+    } 
+    else {
+      if (!HyperGfxIsHires())      
+        return edit4[location-0xe000];
+      else
+        return edit480[location-0xe000];
+    }    
+  } 
+  else if ( (location > 0xe800) && (location < 0xf000) ) {
+    if (location == 0xe812)         // PORT B
+      return (_rows[_row] ^ 0xff);    
+    else if (location == 0xe810)    // PORT A
+      return (_row | 0x80); 
+#ifdef HAS_USBHOST
+    else if (location == 0xe84f)    // PORT Joystick
+      return (joystick0); 
+#endif
+    else
+      return 0x00;
+  }  
+  else {
+    return kernal4[location-0xf000];
+  }
+}
+
+void writeWord( uint16_t location, uint8_t value)
+{
+  if (location < 0x8000) { 
+    if (location < PET_MEMORY_SIZE) {
+      petram[location] = value;
+    }
+  }
+  else if (location < 0xa000) {
+    HyperGfxWrite(location, value);
+  }
+#ifdef PETIO_A000
+  else if (location < 0xb000) {
+    mem_a000[location-0xa000] = value;
+  }
+#endif
+  else if ( (location > 0xe800) && (location < 0xf000) ) {
+    if (location == 0xe812)       // PORT B
+    {
+    } 
+    else if (location == 0xe810)  // PORT A
+    {
+      _row = (value & 0x0f);
+    }          
+    else if (location == 0xe84C) {
+      if (value & 0x02) 
+      {
+        font_lowercase = true;
+      }
+      else 
+      {
+        font_lowercase = false;
+      }
+    }  
+  }
+}
+
+static void pet_kdown(uint8_t asciicode, bool shiftl, bool shiftr ) {
+  _set(ascii2rowcol(asciicode));
+  if ( (shiftl) && (shiftr) ) _rows[0]|= 0x40;
+  else if (shiftl) _rows[6]|= 0x01;
+  else if (shiftr) _rows[6]|= 0x40;
+}
+
+static void pet_kup(uint8_t asciicode) {
+  _reset(ascii2rowcol(asciicode));
+  _rows[6] &= 0xfe;
+  _rows[6] &= 0xbf;
+  _rows[0] &= 0xbf; 
+}
+
+
+static void pet_prg_write(uint8_t * src, int length )
+{
+  while (1)
+  {
+    if (prg_wr == 0)
+    {
+      prg_wr++;
+      prg_add_start = *src++;
+    }   
+    else if (prg_wr == 1)
+    {
+      prg_wr++;
+      prg_add_start = prg_add_start + (*src++ << 8);
+      prg_add_cur = prg_add_start;
+      //printf("loading at %04x\n",prg_add_start);
+    }   
+    else
+    {
+      //printf("%02x\n",*src);
+      petram[prg_add_cur++] = *src++;
+    } 
+    length  = length - 1;
+    if ( length == 0) return;
+  }
+}
+
+static void pet_prg_run( void )
+{
+  uint8_t lo,hi;
+  petram[0xc7] = petram[0x28];
+  petram[0xc8] = petram[0x29];
+
+  lo = (uint8_t)(prg_add_cur & 0xff);
+  hi = (uint8_t)(prg_add_cur >> 8);
+  petram[0x2a] = lo;
+  petram[0x2c] = lo;
+  petram[0x2e] = lo;
+  petram[0xc9] = lo;
+  petram[0x2b] = hi;
+  petram[0x2d] = hi;
+  petram[0x2f] = hi;
+  petram[0xca] = hi;
+
+  pet_running = true;
+  prg_start = true;
+  //printf("prg size %d\n",prg_size);  
+  prg_wr = 0;
+}
+
+static void pet_reset( void )
+{
+    got_reset = true;
+    prg_wr = 0;
+}
+
+static void pet_start(void) 
+{
+  for (int i=0;i<PET_MEMORY_SIZE;i++) 
+  {
+    petram[i] = 0;
+  }
+ 
+  mos.Reset();
+  for (int i = sizeof(_rows); i--; )
+    _rows[i] = 0;
+  pet_running = true;
+  prg_start = false;
+  prg_wr = 0;
+}
+
+
+#define PET_LINES  (260)
+#define PET_CYCLES (PET_LINES*64) //16600 //9000
+
+static void pet_line(void) 
+{
+  mos.Run(PET_CYCLES/PET_LINES);
+}
+
+static void pet_remaining(void) 
+{
+  mos.Run((PET_CYCLES/PET_LINES)*(PET_LINES-200));
+  mos.IRQ();
+}
+
+// ****************************************
+// Keyboard
+// ****************************************
+#define KEY_DEBOUNCE_MS 50
+#define BOOT_SEQ_MS 700
+
+static uint8_t prev_key = 0;
+static int repeat_cnt = 0;
+static bool send_cmdstring = false;
+static const char * cmdstring_pt;
+//static const char petlistruncmd[] = {'L', 'I', 'S', 'T', 0x0d, 'R', 'U', 'N', 0x0d, 0}; // LIST + RUN
+static const char petruncmd[] = {'R', 'U', 'N', 0x0d, 0}; // RUN 
+static const char petfbcmd[] = {1, 'S', 'Y', 'S', '4', '0', '9', '6', '0' ,0x0d, 0}; // RUN 
+
+static bool repeating_timer_callback(struct repeating_timer *t) {
+    if (repeat_cnt ) repeat_cnt--;
+    if (repeat_cnt == 0) {
+      if (prev_key) {
+        pet_kup(prev_key);
+        prev_key = 0;
+      }
+      if (send_cmdstring) {
+        if (*cmdstring_pt) {
+          int asciikey = (*cmdstring_pt++)&0x7f;
+          if (asciikey == 1) {
+            repeat_cnt = BOOT_SEQ_MS; 
+            prev_key = 0;
+          } 
+          else
+          if (asciikey == 2) {      
+            prev_key = 0;
+          } 
+          else
+          if (asciikey) {
+            pet_kdown( asciikey, false, false);
+            prev_key = asciikey;
+            repeat_cnt = KEY_DEBOUNCE_MS; 
+          }
+        }
+        else {
+          send_cmdstring = false;
+        }
+      }
+    } 
+    return true;
+}
+
+#ifdef HAS_USBHOST
+// ****************************************
+// USB keyboard
+// ****************************************
+void signal_joy (int code, int pressed) {
+  if ( (code == KBD_KEY_DOWN) && (pressed) ) joystick0 &= ~JOY_DOWN;
+  if ( (code == KBD_KEY_DOWN) && (!pressed) ) joystick0 |= JOY_DOWN;
+  if ( (code == KBD_KEY_UP) && (pressed) ) joystick0 &= ~JOY_UP;
+  if ( (code == KBD_KEY_UP) && (!pressed) ) joystick0 |= JOY_UP;
+  if ( (code == KBD_KEY_LEFT) && (pressed) ) joystick0 &= ~JOY_LEFT;
+  if ( (code == KBD_KEY_LEFT) && (!pressed) ) joystick0 |= JOY_LEFT;
+  if ( (code == KBD_KEY_RIGHT) && (pressed) ) joystick0 &= ~JOY_RIGHT;
+  if ( (code == KBD_KEY_RIGHT) && (!pressed) ) joystick0 |= JOY_RIGHT;
+  if ( (code == ' ') && (pressed) ) joystick0 &= ~JOY_FIRE;
+  if ( (code == ' ') && (!pressed) ) joystick0 |= JOY_FIRE;
+}
+
+void kbd_signal_raw_key (int keycode, int code, int codeshifted, int flags, int pressed) {
+  // LCTRL + LSHIFT + R => reset
+  if ( ( (flags & (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL)) == (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL) ) && (!pressed) && (code == 'r') ) {
+    got_reset = true;
+  }
+
+  // LCTRL + LSHIFT + J => keyboard as joystick
+  if ( ( (flags & (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL)) == (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL) ) && (!pressed) && (code == 'j') ) {
+    if (kbdasjoy == true) kbdasjoy = false; 
+    else kbdasjoy = true;
+  }
+
+  //keyboard as joystick?
+  if (kbdasjoy == true) {
+      if (prev_code) signal_joy(prev_code, 0);
+      if (code) {
+        signal_joy(code, pressed);
+        if (pressed) prev_code = code;
+      }  
+      //mem[REG_TEXTMAP_L1] = joystick0;
+  }
+  else {
+    if (!(flags & (KBD_FLAG_RSHIFT + KBD_FLAG_RCONTROL))) {
+      if (codeshifted == '&') {code = '6'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '\"') {code = '2'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '\'') {code = '7'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '(') {code = '8'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '!') {code = '1'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '*') {code = ':'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '%') {code = '5'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '?') {code = '/'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '.') {code = '.'; flags |= 0; }
+      else if (codeshifted == '+') {code = ';'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '>') {code = '.'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == ')') {code = '9'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '$') {code = '4'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '=') {code = '-'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '<') {code = ','; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == KBD_KEY_DOWN) {code = 0x11; flags |= 0; }
+      else if (codeshifted == KBD_KEY_RIGHT) {code = 0x1D; flags |= 0; }
+      else if (codeshifted == KBD_KEY_UP) {code = 0x11; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == KBD_KEY_LEFT) {code = 0x1D; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == KBD_KEY_ESC) {code = 0x9B; flags |= 0; }
+      // no PET chars for below characters!!!
+      else if (codeshifted == '@') {code = 0; flags |= 0; }
+      else if (codeshifted == '[') {code = 0; flags |= 0; }
+      else if (codeshifted == ']') {code = 0; flags |= 0; }
+      else if (codeshifted == '^') {code = 0; flags |= 0; }
+      else if (codeshifted == '{') {code = 0; flags |= 0; }
+      else if (codeshifted == '}') {code = 0; flags |= 0; }
+      else if (codeshifted == '_') {code = 0; flags |= 0; }
+      else if ( (codeshifted >= 'a') && (codeshifted <= 'z') ) { code = toupper(code); }
+      else if ( (codeshifted >= 'A') && (codeshifted <= 'Z') ) { code = codeshifted; flags |= KBD_FLAG_RSHIFT; }
+      else code = codeshifted;
+    }
+    else {
+      code = toupper(code);
+    }  
+
+    if (prev_code) pet_kup(prev_code);
+
+    if (code) {
+      if (pressed == KEY_PRESSED)
+      {
+        pet_kdown(code, flags & KBD_FLAG_RSHIFT, flags & KBD_FLAG_RCONTROL);
+        prev_code = code;
+        //printf("kdown %c\r\n", kbd_to_ascii (code, flags));
+      }
+      else 
+      {
+        pet_kup(code);
+        //printf("kup %c\r\n", kbd_to_ascii (code, flags));
+      }
+    }    
+  }  
+}
+
+
+#else
+
+// ****************************************
+// USB SERIAL server
+// ****************************************
+static int serial_rx(uint8_t* buf, int len) {
+  uint8_t asciikey;
+
+  if (len >= 1) {
+    switch (buf[0]) {
+      case sercmd_reset:
+        pet_reset();
+        break;
+      case sercmd_key:        
+        asciikey = toupper((char)buf[1]);
+        if (asciikey) {
+          pet_kdown( asciikey, false, false);
+          prev_key = asciikey;
+          repeat_cnt = KEY_DEBOUNCE_MS; 
+        }
+        break;
+      case sercmd_prg:
+        pet_prg_write((uint8_t *)&buf[1],len-1); 
+        break;
+      case sercmd_run:
+        pet_prg_run();
+        cmdstring_pt = &petruncmd[0];
+        send_cmdstring = true;
+        repeat_cnt = 0; 
+        break;
+      default:
+        break;
+    }
+  }  
+  return 0;
+}
+#endif
+
+#endif
 
 #ifdef HAS_PETIO
 // Petbus PIO config
@@ -33,7 +567,6 @@ const uint smread = 1;
 
 #define RESET_TRESHOLD 15000
 static uint32_t reset_counter = 0;
-static bool got_reset = false;
 
 extern uint8_t cmd;
 
@@ -337,5 +870,100 @@ extern bool petbus_poll_reset(void)
   }
   return retval;
 }
-
 #endif
+
+
+static void __not_in_flash("pio_core") pio_core(void)
+{
+  while(true) { 
+#ifdef CPU_EMU
+    if (got_reset)
+    {
+      got_reset = false;
+      HyperGfxReset();
+      sleep_ms(30);
+      prev_key = 0;
+      pet_start();      
+      pet_running = true;
+      cmdstring_pt = &petfbcmd[0];
+      send_cmdstring = true;
+      repeat_cnt = 0;
+    }
+    for (int i = 8; i < 408; i = i + 2) {
+        hdmi_wait_line(i);
+        pet_line();
+    }
+    pet_remaining();
+#else
+    if (got_reset)
+    {
+      got_reset = false;
+      HyperGfxReset();
+    }
+#endif 
+#ifdef HAS_SND  
+//    audio_handle();
+#endif  
+    __dmb();
+  }
+}
+
+
+
+
+void start_system(void) 
+{
+#ifdef CPU_EMU
+#ifdef HAS_USBHOST
+    board_init();
+    // init host stack on configured roothub port
+    tuh_init(BOARD_TUH_RHPORT);
+#else
+    usb_serial_init(&serial_rx);
+#endif
+  struct repeating_timer timer;
+  add_repeating_timer_ms(-1, repeating_timer_callback, NULL, &timer); 
+  cmdstring_pt = &petfbcmd[0];
+  send_cmdstring = true;
+  repeat_cnt = 0;
+#endif
+
+  HyperGfxFlashFSInit();  
+  HyperGfxInit();
+
+  // A000 area content is file browser default
+#ifdef PETIO_A000
+  memcpy((void *)&mem_a000[0], (void *)fb, sizeof(fb));
+//  memcpy((void *)&mem_a000[0], (void *)vsync, sizeof(vsync));
+#endif 
+
+
+#ifdef CPU_EMU
+  pet_start(); 
+  multicore_launch_core1(pio_core);
+
+#else
+  multicore_launch_core1(pio_core);
+#ifdef BUS_DEBUG
+  memptr = 0;
+  memptw = 0;
+#endif
+#endif
+
+  while(true) {
+    HyperGfxHandleGfx();    
+#ifdef BUS_DEBUG
+    DebugShow();    
+#endif
+    HyperGfxHandleCmdQueue();
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+#ifdef HAS_USBHOST
+    // tinyusb host task
+    tuh_task();
+    hid_app_task();
+#endif
+#endif        
+    __dmb();        
+  }
+
+}

@@ -4,19 +4,9 @@
 
 #define KEYLAYOUT      KLAYOUT_UK
 
-//#define INVX           1
 //#define HAS_SND        1
-#define USE_VGA        1
-//#define HAS_USBHOST    1
-//#define HAS_USBPIO     1
-//#define ILI9341        1
-//#define ST7789         1
-//#define SWAP_JOYSTICK  1
-//#define LOHRES         1
-//#define ROTATE_SCREEN  1
-//#define FLIP_SCREEN  1
-//#define HAS_PSRAM      1
-
+//#define HAS_USBHOST    1		// enable USB keyboard (standalone mode only)  
+//#define HAS_NETWORK    1		// enable network wifi (standalone mode only)  
 
 
 #ifdef HAS_SND
@@ -26,9 +16,12 @@
 //#define AUDIO_8BIT     1
 #define AUDIO_1DMA      1
 
+#ifdef AUDIO_1DMA
+#undef AUDIO_8BIT
+#endif
 
 #ifdef AUDIO_8BIT
-typedef uint8_t  audio_sample;
+typedef char  audio_sample;
 #else
 typedef short  audio_sample;
 #endif

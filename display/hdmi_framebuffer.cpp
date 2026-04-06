@@ -30,7 +30,6 @@
 #include <string.h>
 #include <cstdlib>
 
-#include "include.h"
 #include "hardware/gpio.h"
 #include "hardware/irq.h"
 #include "hardware/dma.h"
@@ -41,7 +40,14 @@
 #include "hardware/clocks.h"
 #include "hardware/vreg.h"
 #include "hardware/pwm.h"
+#include "pico/float.h"
+#include "pico/stdlib.h"
 #include "iopins.h"
+
+
+#define MAX_FB_WIDTH   640
+#define MAX_FB_HEIGHT  240
+
 // ----------------------------------------------------------------------------
 // DVI constants
 
@@ -96,79 +102,53 @@ static uint32_t vactive_line[] = {
 };
 
 
-static bool vsync=true;
 
+static hdmi_framebuffer_obj_t hdmi_obj;
+static gfx_mode_t gfxmode = MODE_UNDEFINED;
+static int fb_width;
+static int fb_height;
+static __attribute__((aligned(32))) uint32_t dma_commands[(MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + MODE_V_BACK_PORCH + 2 * MODE_V_ACTIVE_LINES + 1) * 4]; 
+static __attribute__((aligned(32))) uint8_t framebuffer[MAX_FB_WIDTH*MAX_FB_HEIGHT];
+static bool vsync = true;
 static hdmi_framebuffer_obj_t *active_picodvi = NULL;
 
-static void __not_in_flash_func(dma_irq_handler)(void) {
-    uint ch_num = active_picodvi->dma_pixel_channel;
-    dma_channel_hw_t *ch = &dma_hw->ch[ch_num];
-    dma_hw->intr = 1u << ch_num;
 
-    // Set the read_addr back to the start and trigger the first transfer (which
-    // will trigger the pixel channel).
-    ch = &dma_hw->ch[active_picodvi->dma_command_channel];
-    ch->al3_read_addr_trig = (uintptr_t)active_picodvi->dma_commands;
-    vsync = (vsync==true)?false:true;
-}
 
-void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t height, uint16_t color_depth) {
-    bool pixel_doubled = width == 320 && height == 240;
-    bool line_doubled = width == 640 && height == 240;
+#define DMA_CTRL  ( (VGA_DMA_CHANNEL+1) << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB | \
+        DREQ_HSTX << DMA_CH0_CTRL_TRIG_TREQ_SEL_LSB | \
+        DMA_CH0_CTRL_TRIG_IRQ_QUIET_BITS | \
+        DMA_CH0_CTRL_TRIG_INCR_READ_BITS | \
+        DMA_CH0_CTRL_TRIG_EN_BITS | DMA_SIZE_32 << DMA_CH0_CTRL_TRIG_DATA_SIZE_LSB)
+
+
+#define DMA_PIXEL_CTRL ( (VGA_DMA_CHANNEL+1) << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB | \
+        DREQ_HSTX << DMA_CH0_CTRL_TRIG_TREQ_SEL_LSB | \
+        DMA_CH0_CTRL_TRIG_IRQ_QUIET_BITS | \
+        DMA_CH0_CTRL_TRIG_INCR_READ_BITS | \
+        DMA_CH0_CTRL_TRIG_EN_BITS | DMA_SIZE_8 << DMA_CH0_CTRL_TRIG_DATA_SIZE_LSB)
+
+
+static void set_hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t height) {
+    bool half_width = (width == 320);
+
+    irq_set_enabled(DMA_IRQ_0, false);
+    dma_channel_abort(self->dma_pixel_channel);
+    dma_channel_abort(self->dma_command_channel);
+    sleep_ms(30);
+    memset((void*)&framebuffer[0],0, MAX_FB_WIDTH*MAX_FB_HEIGHT);
 
     self->width = width;
     self->height = height;
-    self->pitch = (self->width * color_depth) / 8;
-    self->color_depth = color_depth;
-    // Align each row to words.
-    if (self->pitch % sizeof(uint32_t) != 0) {
-        self->pitch += sizeof(uint32_t) - (self->pitch % sizeof(uint32_t));
-    }
-    self->pitch /= sizeof(uint32_t);
-    size_t framebuffer_size = self->pitch * self->height;
-
-    // We check that allocations aren't in PSRAM because we haven't added XIP
-    // streaming support.
-    if (self->framebuffer == NULL)
-        self->framebuffer = (uint32_t *)malloc(framebuffer_size * sizeof(uint32_t));
-    if (self->framebuffer == NULL || ((size_t)self->framebuffer & 0xf0000000) == 0x10000000) {
-        return;
-    }
+    self->pitch = self->width / sizeof(uint32_t);
+    if (half_width) self->pitch=self->pitch*2; 
 
     // We compute all DMA transfers needed for a single frame. This ensure we don't have any super
     // quick interrupts that we need to respond to. Each transfer takes two words, trans_count and
     // read_addr. Active pixel lines need two transfers due to different read addresses. When pixel
     // doubling, then we must also set transfer size.
-    size_t dma_command_size = 2;
-    if (pixel_doubled) {
-        dma_command_size = 4;
-    }
-    self->dma_commands_len = (MODE_V_FRONT_PORCH + MODE_V_SYNC_WIDTH + MODE_V_BACK_PORCH + 2 * MODE_V_ACTIVE_LINES + 1) * dma_command_size;
-    self->dma_commands = (uint32_t *)malloc(self->dma_commands_len * sizeof(uint32_t));
-    if (self->dma_commands == NULL || ((size_t)self->framebuffer & 0xf0000000) == 0x10000000) {
-        free(self->framebuffer);
-        return;
-    }
-
-    int dma_pixel_channel_maybe = VGA_DMA_CHANNEL; //dma_claim_unused_channel(false);
-    //if (dma_pixel_channel_maybe < 0) {
-    //    return;
-    //}
-
-    int dma_command_channel_maybe = VGA_DMA_CHANNEL+1; //dma_claim_unused_channel(false);
-    //if (dma_command_channel_maybe < 0) {
-    //    dma_channel_unclaim((uint)dma_pixel_channel_maybe);
-    //    return;
-    //}
-    self->dma_pixel_channel = dma_pixel_channel_maybe;
-    self->dma_command_channel = dma_command_channel_maybe;
-
-    size_t words_per_line;
-    if (self->color_depth > 8) {
-        words_per_line = (self->width * (self->color_depth / 8)) / sizeof(uint32_t);
-    } else {
-        words_per_line = (self->width / (8 / self->color_depth)) / sizeof(uint32_t);
-    }
+    self->dma_command_size = (half_width?4:2)*sizeof(uint32_t)*2;
+    self->dma_pixel_channel = VGA_DMA_CHANNEL; 
+    self->dma_command_channel = VGA_DMA_CHANNEL+1;
 
     size_t command_word = 0;
     size_t frontporch_start = MODE_V_TOTAL_LINES - MODE_V_FRONT_PORCH;
@@ -179,39 +159,18 @@ void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t hei
     size_t backporch_end = backporch_start + MODE_V_BACK_PORCH;
     size_t active_start = backporch_end;
 
-    uint32_t dma_ctrl = self->dma_command_channel << DMA_CH0_CTRL_TRIG_CHAIN_TO_LSB |
-        DREQ_HSTX << DMA_CH0_CTRL_TRIG_TREQ_SEL_LSB |
-        DMA_CH0_CTRL_TRIG_IRQ_QUIET_BITS |
-        DMA_CH0_CTRL_TRIG_INCR_READ_BITS |
-        DMA_CH0_CTRL_TRIG_EN_BITS;
-    uint32_t dma_pixel_ctrl;
-    if (pixel_doubled) {
-        // We do color_depth size transfers when pixel doubling. The memory bus will
-        // duplicate the 16 bits to produce 32 bits for the HSTX.
-        if (color_depth == 16) {
-            dma_pixel_ctrl = dma_ctrl | DMA_SIZE_16 << DMA_CH0_CTRL_TRIG_DATA_SIZE_LSB;
-        } else {
-            dma_pixel_ctrl = dma_ctrl | DMA_SIZE_8 << DMA_CH0_CTRL_TRIG_DATA_SIZE_LSB;
-        }
-    } else {
-        dma_pixel_ctrl = dma_ctrl | DMA_SIZE_32 << DMA_CH0_CTRL_TRIG_DATA_SIZE_LSB;
-    }
-    if (self->color_depth == 16) {
-        dma_pixel_ctrl |= DMA_CH0_CTRL_TRIG_BSWAP_BITS;
-    }
-    dma_ctrl |= DMA_SIZE_32 << DMA_CH0_CTRL_TRIG_DATA_SIZE_LSB;
 
     uint32_t dma_write_addr = (uint32_t)&hstx_fifo_hw->fifo;
     // Write ctrl and write_addr once when not pixel doubling because they don't
     // change. (write_addr doesn't change when pixel doubling either but we need
     // to rewrite it because it is after the ctrl register.)
-    if (!pixel_doubled) {
-        dma_channel_hw_addr(self->dma_pixel_channel)->al1_ctrl = dma_ctrl;
+    if (!half_width) {
+        dma_channel_hw_addr(self->dma_pixel_channel)->al1_ctrl = DMA_CTRL;
         dma_channel_hw_addr(self->dma_pixel_channel)->al1_write_addr = dma_write_addr;
     }
     for (size_t v_scanline = 0; v_scanline < MODE_V_TOTAL_LINES; v_scanline++) {
-        if (pixel_doubled) {
-            self->dma_commands[command_word++] = dma_ctrl;
+        if (half_width) {
+            self->dma_commands[command_word++] = DMA_CTRL;
             self->dma_commands[command_word++] = dma_write_addr;
         }
         if (vsync_start <= v_scanline && v_scanline < vsync_end) {
@@ -226,26 +185,22 @@ void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t hei
         } else {
             self->dma_commands[command_word++] = count_of(vactive_line);
             self->dma_commands[command_word++] = (uintptr_t)vactive_line;
-            size_t row = v_scanline - active_start;
-            size_t transfer_count = words_per_line;
-            if (pixel_doubled) {
-                self->dma_commands[command_word++] = dma_pixel_ctrl;
+            size_t row = (v_scanline - active_start)/2;
+            size_t transfer_count = self->pitch;
+            if (half_width) {
+                self->dma_commands[command_word++] = DMA_PIXEL_CTRL;
                 self->dma_commands[command_word++] = dma_write_addr;
-                row /= 2;
                 // When pixel doubling, we do one transfer per pixel and it gets
                 // mirrored into the rest of the word.
                 transfer_count = self->width;
             }
-            if (line_doubled) {
-                row /= 2;
-            }    
             self->dma_commands[command_word++] = transfer_count;
             uint32_t *row_start = &self->framebuffer[row * self->pitch];
             self->dma_commands[command_word++] = (uintptr_t)row_start;
         }
     }
     // Last command is NULL which will trigger an IRQ.
-    if (pixel_doubled) {
+    if (half_width) {
         self->dma_commands[command_word++] = DMA_CH0_CTRL_TRIG_IRQ_QUIET_BITS |
             DMA_CH0_CTRL_TRIG_EN_BITS;
         self->dma_commands[command_word++] = 0;
@@ -253,56 +208,20 @@ void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t hei
     self->dma_commands[command_word++] = 0;
     self->dma_commands[command_word++] = 0;
 
-    if (color_depth == 16) {
-        // Configure HSTX's TMDS encoder for RGB565
-        hstx_ctrl_hw->expand_tmds =
-            4 << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |
-                0 << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB |
-                5 << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |
-                27 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB |
-                4 << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |
-                21 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;
-    } else if (color_depth == 8) {
-        // Configure HSTX's TMDS encoder for RGB332
-        hstx_ctrl_hw->expand_tmds =
-            2 << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |
-                0 << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB |
-                2 << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |
-                29 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB |
-                1 << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |
-                26 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;
-    } else if (color_depth == 4) {
-        // Configure HSTX's TMDS encoder for RGBD
-        hstx_ctrl_hw->expand_tmds =
-            0 << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |
-                28 << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB |
-                0 << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |
-                27 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB |
-                0 << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |
-                26 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;
-    } else {
-        // Grayscale
-        uint8_t rot = 24 + color_depth;
-        hstx_ctrl_hw->expand_tmds =
-            (color_depth - 1) << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |
-                rot << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB |
-                    (color_depth - 1) << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |
-                rot << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB |
-                    (color_depth - 1) << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |
-                rot << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;
-    }
-    size_t shifts_before_empty = ((32 / color_depth) % 32);
-    if (pixel_doubled && color_depth == 8) {
-        // All but 320x240 at 8bits will shift through all 32 bits. We are only
-        // doubling so we only need 16 bits (2 x 8) to get our doubled pixel.
-        shifts_before_empty = 2;
-    }
-
+    // Configure HSTX's TMDS encoder for RGB332
+    hstx_ctrl_hw->expand_tmds =
+        2 << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB |
+            0 << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB |
+            2 << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB |
+            29 << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB |
+            1 << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB |
+            26 << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB;
+    size_t shifts_before_empty = half_width?2:4; //((32 / 8) % 32);
     // Pixels come in 32 bits at a time. color_depth dictates the number
     // of pixels per word. Control symbols (RAW) are an entire 32-bit word.
     hstx_ctrl_hw->expand_shift =
         shifts_before_empty << HSTX_CTRL_EXPAND_SHIFT_ENC_N_SHIFTS_LSB |
-            color_depth << HSTX_CTRL_EXPAND_SHIFT_ENC_SHIFT_LSB |
+            8 << HSTX_CTRL_EXPAND_SHIFT_ENC_SHIFT_LSB |
             1 << HSTX_CTRL_EXPAND_SHIFT_RAW_N_SHIFTS_LSB |
             0 << HSTX_CTRL_EXPAND_SHIFT_RAW_SHIFT_LSB;
 
@@ -352,7 +271,7 @@ void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t hei
     // This wraps the transfer back to the start of the write address.
     size_t wrap = 3; // 8 bytes because we write two DMA registers.
     volatile uint32_t *write_addr = &dma_hw->ch[self->dma_pixel_channel].al3_transfer_count;
-    if (pixel_doubled) {
+    if (half_width) {
         wrap = 4; // 16 bytes because we write all four DMA registers.
         write_addr = &dma_hw->ch[self->dma_pixel_channel].al3_ctrl;
     }
@@ -368,34 +287,302 @@ void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t hei
         false
         );
 
+    bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
+ }
 
+
+static void __not_in_flash_func(dma_irq_handler)(void) {
+    //if ( gfx_mode != gfx_mode_requested ) set_hdmi_framebuffer(&hdmi_obj, fb_width, fb_height);
+    uint ch_num = active_picodvi->dma_pixel_channel;
+    dma_hw->intr = 1u << ch_num;
+
+    // Set the read_addr back to the start and trigger the first transfer (which
+    // will trigger the pixel channel).
+    dma_channel_hw_t *ch = &dma_hw->ch[ch_num];
+    ch = &dma_hw->ch[active_picodvi->dma_command_channel];
+    ch->al3_read_addr_trig = (uintptr_t)active_picodvi->dma_commands;
+
+    vsync = (vsync==true)?false:true;
+}
+
+static void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t height) {
+
+    set_hdmi_framebuffer(self, width, height);
+
+    active_picodvi = self;
     dma_hw->ints0 = (1u << self->dma_pixel_channel);
     dma_hw->inte0 = (1u << self->dma_pixel_channel);
     irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
     irq_set_priority (DMA_IRQ_0, 0);    
     irq_set_enabled(DMA_IRQ_0, true);
 
-    bus_ctrl_hw->priority = BUSCTRL_BUS_PRIORITY_DMA_W_BITS | BUSCTRL_BUS_PRIORITY_DMA_R_BITS;
-
-    // For the output.
-    self->framebuffer_len = framebuffer_size;
-
-    active_picodvi = self;
-
-    //common_hal_picodvi_framebuffer_refresh(self);
     dma_irq_handler();
 }
 
-void hdmi_framebuffer_vsync(void) {
+
+void __not_in_flash("hdmi_init") hdmi_init(gfx_mode_t mode)
+{
+    hdmi_obj.framebuffer = (uint32_t *)framebuffer;
+    hdmi_obj.dma_commands = dma_commands;
+    switch(mode) {
+        case MODE_VGA_320x240:
+          fb_width = 320;
+          fb_height = 240;
+          break;
+
+        case MODE_VGA_256x240:
+          fb_width = 320;
+          fb_height = 240;
+          break;
+
+        case MODE_VGA_640x240:
+          fb_width = 640;
+          fb_height = 240;
+          break;
+    }
+    hdmi_framebuffer(&hdmi_obj, fb_width, fb_height);
+    gfxmode = mode;
+}
+
+ 
+uint8_t * __not_in_flash("hdmi_get_line_buffer") hdmi_get_line_buffer(int j) {
+  return (&framebuffer[((gfxmode==MODE_VGA_256x240)?(320-256)/2:0) + j*MAX_FB_WIDTH]);
+}
+
+void __not_in_flash("hdmi_fill_screen") hdmi_fill_screen(uint8_t color) {
+  int i,j;
+  uint8_t color8 = VGA_RGB(R16(color),G16(color),B16(color));
+  for (j=0; j<fb_height; j++)
+  {
+    uint8_t * dst=&framebuffer[j*MAX_FB_WIDTH];
+    for (i=0; i<fb_width; i++)
+    {
+      *dst++ = color8;
+    }
+  }
+}
+
+int __not_in_flash("hdmi_raster_line") hdmi_raster_line(void) {
+    dma_channel_hw_t *ch = &dma_hw->ch[active_picodvi->dma_command_channel];
+    uintptr_t line = (uintptr_t)ch->read_addr - (uintptr_t)active_picodvi->dma_commands;
+    return (line/active_picodvi->dma_command_size);
+}
+
+void __not_in_flash("hdmi_vsync") hdmi_vsync(void) {
     volatile bool vb=vsync; 
     while (vsync==vb) {
         __dmb();
     };
 }
 
-int __not_in_flash("hdmi_framebuffer_line") hdmi_framebuffer_line(void) {
-    dma_channel_hw_t *ch = &dma_hw->ch[active_picodvi->dma_command_channel];
-    uintptr_t line = (uintptr_t)ch->read_addr - (uintptr_t)active_picodvi->dma_commands;
-    return (line/8);
+void __not_in_flash("hdmi_wait_line") hdmi_wait_line(int line)
+{
+  while (hdmi_raster_line() != line) {};
 }
 
+
+#ifdef HAS_SND
+
+#ifdef AUDIO_1DMA
+#define SAMPLE_REPEAT_SHIFT 0       // not possible to repeat samples with single DMA!! 
+#endif
+#ifdef AUDIO_3DMA
+#define SAMPLE_REPEAT_SHIFT 2       // shift 2 is REPETITION_RATE=4
+#endif
+#ifndef SAMPLE_REPEAT_SHIFT
+#define SAMPLE_REPEAT_SHIFT 0       // not possible to repeat samples CBACK!!
+#endif
+
+#define REPETITION_RATE     (1<<SAMPLE_REPEAT_SHIFT) 
+
+static void (*fillsamples)(audio_sample * stream, int len) = nullptr;
+static audio_sample * snd_buffer;       // samples buffer (1 malloc for 2 buffers)
+static uint16_t snd_nb_samples;         // total nb samples (mono) later divided by 2
+static uint16_t snd_sample_ptr = 0;     // sample index
+static audio_sample * audio_buffers[2]; // pointers to 2 samples buffers 
+static volatile int cur_audio_buffer;
+static volatile int last_audio_buffer;
+#ifdef AUDIO_3DMA
+static uint32_t single_sample = 0;
+static uint32_t *single_sample_ptr = &single_sample;
+static int pwm_dma_chan, trigger_dma_chan, sample_dma_chan;
+#endif
+#ifdef AUDIO_1DMA
+static int pwm_dma_chan;
+#endif
+
+/********************************
+ * Processing
+********************************/ 
+#ifdef AUDIO_1DMA
+static void __isr __time_critical_func(AUDIO_isr)()
+{
+  cur_audio_buffer = 1 - cur_audio_buffer;  
+  dma_hw->ch[pwm_dma_chan].al3_read_addr_trig = (intptr_t)audio_buffers[cur_audio_buffer];
+  dma_hw->ints1 = (1u << pwm_dma_chan);   
+}
+#endif
+
+#ifdef AUDIO_3DMA
+static void __isr __time_critical_func(AUDIO_isr)()
+{
+  cur_audio_buffer = 1 - cur_audio_buffer;  
+  dma_hw->ch[sample_dma_chan].al1_read_addr = (intptr_t)audio_buffers[cur_audio_buffer];
+  dma_hw->ch[trigger_dma_chan].al3_read_addr_trig = (intptr_t)&single_sample_ptr;
+  dma_hw->ints1 = (1u << trigger_dma_chan);
+}
+#endif
+
+// fill half buffer depending on current position
+static void __not_in_flash("pwm_audio_handle_buffer") pwm_audio_handle_buffer(void)
+{
+  if (last_audio_buffer == cur_audio_buffer) {
+    return;
+  }
+  audio_sample *buf = audio_buffers[last_audio_buffer];
+  last_audio_buffer = cur_audio_buffer;
+  fillsamples(buf, snd_nb_samples);
+}
+
+static void pwm_audio_reset(void)
+{
+  memset((void*)snd_buffer,0, snd_nb_samples*sizeof(uint8_t));
+}
+
+/********************************
+ * Initialization
+********************************/ 
+static void pwm_audio_init(int buffersize, void (*callback)(audio_sample * stream, int len))
+{
+  fillsamples = callback;
+  snd_nb_samples = buffersize;
+  snd_sample_ptr = 0;
+  snd_buffer =  (audio_sample*)malloc(snd_nb_samples*sizeof(audio_sample));
+  if (snd_buffer == NULL) {
+    printf("sound buffer could not be allocated!!!!!\n");
+    return;  
+  }
+  memset((void*)snd_buffer,128, snd_nb_samples*sizeof(audio_sample));
+
+  gpio_set_function(AUDIO_PIN, GPIO_FUNC_PWM);
+
+  int audio_pin_slice = pwm_gpio_to_slice_num(AUDIO_PIN);
+  pwm_set_gpio_level(AUDIO_PIN, 0);
+
+  // Setup PWM for audio output
+  pwm_config config = pwm_get_default_config();
+  pwm_config_set_clkdiv(&config, (((float)SOUNDRATE)/1000) / REPETITION_RATE);
+  pwm_config_set_wrap(&config, 254);
+  pwm_init(audio_pin_slice, &config, true);
+
+  snd_nb_samples = snd_nb_samples/2;
+  audio_buffers[0] = &snd_buffer[0];
+  audio_buffers[1] = &snd_buffer[snd_nb_samples];
+
+#ifdef AUDIO_3DMA
+  int audio_pin_chan = pwm_gpio_to_channel(AUDIO_PIN);
+  // DMA chain of 3 DMA channels
+  sample_dma_chan = AUD_DMA_CHANNEL;
+  pwm_dma_chan = AUD_DMA_CHANNEL+1;
+  trigger_dma_chan = AUD_DMA_CHANNEL+2;
+
+  // setup PWM DMA channel
+  dma_channel_config pwm_dma_chan_config = dma_channel_get_default_config(pwm_dma_chan);
+  channel_config_set_transfer_data_size(&pwm_dma_chan_config, DMA_SIZE_32);              // transfer 32 bits at a time
+  channel_config_set_read_increment(&pwm_dma_chan_config, false);                        // always read from the same address
+  channel_config_set_write_increment(&pwm_dma_chan_config, false);                       // always write to the same address
+  channel_config_set_chain_to(&pwm_dma_chan_config, sample_dma_chan);                    // trigger sample DMA channel when done
+  channel_config_set_dreq(&pwm_dma_chan_config, DREQ_PWM_WRAP0 + audio_pin_slice);       // transfer on PWM cycle end
+  dma_channel_configure(pwm_dma_chan,
+                        &pwm_dma_chan_config,
+                        &pwm_hw->slice[audio_pin_slice].cc,   // write to PWM slice CC register
+                        &single_sample,                       // read from single_sample
+                        REPETITION_RATE,                      // transfer once per desired sample repetition
+                        false                                 // don't start yet
+                        );
+
+
+  // setup trigger DMA channel
+  dma_channel_config trigger_dma_chan_config = dma_channel_get_default_config(trigger_dma_chan);
+  channel_config_set_transfer_data_size(&trigger_dma_chan_config, DMA_SIZE_32);          // transfer 32-bits at a time
+  channel_config_set_read_increment(&trigger_dma_chan_config, false);                    // always read from the same address
+  channel_config_set_write_increment(&trigger_dma_chan_config, false);                   // always write to the same address
+  channel_config_set_dreq(&trigger_dma_chan_config, DREQ_PWM_WRAP0 + audio_pin_slice);   // transfer on PWM cycle end
+  dma_channel_configure(trigger_dma_chan,
+                        &trigger_dma_chan_config,
+                        &dma_hw->ch[pwm_dma_chan].al3_read_addr_trig,     // write to PWM DMA channel read address trigger
+                        &single_sample_ptr,                               // read from location containing the address of single_sample
+                        REPETITION_RATE * snd_nb_samples,              // trigger once per audio sample per repetition rate
+                        false                                             // don't start yet
+                        );
+  dma_channel_set_irq1_enabled(trigger_dma_chan, true);    // fire interrupt when trigger DMA channel is done
+  irq_set_exclusive_handler(DMA_IRQ_1, AUDIO_isr);
+  irq_set_priority (DMA_IRQ_1, PICO_DEFAULT_IRQ_PRIORITY-8);
+  irq_set_enabled(DMA_IRQ_1, true);
+
+  // setup sample DMA channel
+  dma_channel_config sample_dma_chan_config = dma_channel_get_default_config(sample_dma_chan);
+  channel_config_set_transfer_data_size(&sample_dma_chan_config, DMA_SIZE_8);  // transfer 8-bits at a time
+  channel_config_set_read_increment(&sample_dma_chan_config, true);            // increment read address to go through audio buffer
+  channel_config_set_write_increment(&sample_dma_chan_config, false);          // always write to the same address
+  dma_channel_configure(sample_dma_chan,
+                        &sample_dma_chan_config,
+                        (char*)&single_sample + 2*audio_pin_chan,  // write to single_sample
+                        snd_buffer,                      // read from audio buffer
+                        1,                                         // only do one transfer (once per PWM DMA completion due to chaining)
+                        false                                      // don't start yet
+                        );
+
+    // Kick things off with the trigger DMA channel
+    dma_channel_start(trigger_dma_chan);
+#endif
+#ifdef AUDIO_1DMA
+  // Each sample played from a single DMA channel
+  // Setup DMA channel to drive the PWM
+  pwm_dma_chan = AUD_DMA_CHANNEL;
+  dma_channel_config pwm_dma_chan_config = dma_channel_get_default_config(pwm_dma_chan);
+  // Transfer 16 bits at once, increment read address to go through sample
+  // buffer, always write to the same address (PWM slice CC register).
+  channel_config_set_transfer_data_size(&pwm_dma_chan_config, DMA_SIZE_16);
+  channel_config_set_read_increment(&pwm_dma_chan_config, true);
+  channel_config_set_write_increment(&pwm_dma_chan_config, false);
+  // Transfer on PWM cycle end
+  channel_config_set_dreq(&pwm_dma_chan_config, DREQ_PWM_WRAP0 + audio_pin_slice);
+
+  // Setup the channel and set it going
+  dma_channel_configure(
+      pwm_dma_chan,
+      &pwm_dma_chan_config,
+      &pwm_hw->slice[audio_pin_slice].cc, // Write to PWM counter compare
+      snd_buffer, // Read values from audio buffer
+      snd_nb_samples,
+      false // Start immediately if true.
+  );
+
+  // Setup interrupt handler to fire when PWM DMA channel has gone through the
+  // whole audio buffer
+  dma_channel_set_irq1_enabled(pwm_dma_chan, true);
+  irq_set_exclusive_handler(DMA_IRQ_1, AUDIO_isr);
+  //irq_set_priority (DMA_IRQ_1, PICO_DEFAULT_IRQ_PRIORITY-8);
+  irq_set_enabled(DMA_IRQ_1, true);
+  dma_channel_start(pwm_dma_chan);
+#endif
+}
+
+void audio_init(int samplesize, void (*callback)(audio_sample * stream, int len))
+{
+  pwm_audio_init(samplesize, callback);
+}
+
+void __not_in_flash("audio_handle") audio_handle(void)
+{
+    if (fillsamples != NULL) pwm_audio_handle_buffer();
+}
+
+void * audio_get_buffer(void)
+{
+  void *buf = audio_buffers[cur_audio_buffer==0?1:0];
+  return buf; 
+}
+
+#endif

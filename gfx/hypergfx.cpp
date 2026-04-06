@@ -10,13 +10,14 @@ extern "C" {
   #include "iopins.h"   
 }
 
-#include "usb_serial.h"
-
-#include "pico_dsp.h"
+#include "hdmi_framebuffer.h"
 #include "memmap.h"
 #include "gfx.h"
 #include "hypergfx.h"
 
+#ifdef HAS_SND
+#include "reSID.h"
+#endif
 
 #ifdef PET
 #include "petfont.h"
@@ -27,15 +28,14 @@ extern "C" {
 #include "trs_memory.h"
 #endif
 
+#ifdef HAS_USBHOST
+#include "kbd.h"
+#endif
 
 #define ALIGNED __attribute__((aligned(4)))
 
 // Graphics
 #define VGA_RGB(r,g,b)   ( (((r>>5)&0x07)<<5) | (((g>>5)&0x07)<<2) | (((b>>6)&0x3)<<0) )
-
-#define VMODE_HIRES    0
-#define VMODE_LORES    1
-#define VMODE_GAMERES  2
 
 // screen resolution
 #define HI_XRES        640
@@ -74,6 +74,7 @@ extern "C" {
 
 // Screen resolution
 static uint8_t video_default = VMODE_HIRES;
+static int video_mode;
 
 // Frame buffer
 static ALIGNED uint8_t Bitmap[LO_XRES*MAXHEIGHT+GFX_MARGIN];
@@ -113,10 +114,10 @@ static uint8_t font[FONT_SIZE];
 // GFX shadow memory 8000-9fff
 #ifdef PET
 static unsigned char mem_io[0x2000];
-unsigned char *mem=&mem_io[0];
+static unsigned char *gfxmem=&mem_io[0];
 #endif
 #ifdef TRS
-unsigned char *mem=&memory[0xe000];
+static unsigned char *gfxmem=&memory[0xe000];
 #endif
 
 #ifdef PET
@@ -125,98 +126,51 @@ bool font_lowercase = false;
 #ifdef TRS
 bool font_reversed = false;
 #endif
-uint16_t screen_width=640;
+static uint16_t screen_width=640;
+static bool gfx_reset=false; 
 
+#ifdef HAS_SND
+// ****************************************
+// Audio code
+// ****************************************
+static AudioPlaySID playSID;
+static uint8_t prev_sid_reg[32];
+
+static void audio_fill_buffer( audio_sample * stream, int len )
+{
+  playSID.update(SOUNDRATE, (void *)stream, len);
+}
+
+static void sid_dump( void )
+{
+  //memcpy((void *)&buffer[0], (void *)&mem[REG_SID_BASE], 32);
+  for(int i=0;i<32;i++) 
+  {
+    uint8_t reg = gfxmem[REG_SID_BASE+i];
+    if(reg != prev_sid_reg[i]) {       
+        playSID.setreg(i, reg);
+        prev_sid_reg[i] = reg;                  
+    } 
+  }
+}
+#endif
 
 // ****************************************
 // Setup Video mode
 // ****************************************
-static void ResetGFXMem(void) 
-{
-  memset((void*)&Bitmap[0],0, sizeof(Bitmap));
-  memset((void*)&TileData[0],0, sizeof(TileData));
-  memset((void*)&SpriteData[0],0, sizeof(SpriteData));
-  
-
-
-#ifdef NO_HYPER
-#else  
-  SET_BG_COL(VGA_RGB(0x00,0x00,0x00));
-  SET_FG_COL(VGA_RGB(0x00,0xff,0x00));
-  // 0: L0 tiles + L1 petfont
-  // 1: L0 tiles + L1 tiles
-  // 2: L0 tiles
-  // 3: L0 bitmap  
-//  SET_LAYER_MODE( LAYER_L0_TILE | LAYER_L1_TILE | LAYER_L2_SPRITE );
-//  SET_LAYER_MODE( LAYER_L0_TILE | LAYER_L1_PETFONT | LAYER_L2_SPRITE );
-  SET_LAYER_MODE( LAYER_L0_TILE | LAYER_L1_PETFONT | LAYER_L2_SPRITE | LAYER_L2_INBETW );    
-#ifdef PET
-#endif
-#ifdef TRS
-  // end of TRS memory
-  memory[0xe000] = 0xff;
-#endif
-#endif
-
-
-#ifdef PET
-  int cheight = 8;
-  uint8_t* src=(uint8_t*)&petfont[0x0000];
-#endif
-#ifdef TRS
-  int cheight = 12;
-  uint8_t* src=(uint8_t*)&font_m3[0x0000];
-#endif  
-
-
- 
-
-  uint8_t* dst=font;
-  for (int j=0; j<cheight; j++) {
-    for (int i=0; i<256; i++) {
-      *dst++ = src[i*cheight+j];
-    }
-  }
-
- return;
- while (true) {
-      tight_loop_contents();
-  }
-
-
-
-#ifdef PET
-  src=(uint8_t*)&petfont[0x0800];
-#endif
-#ifdef TRS
-  src=(uint8_t*)&font_m3[0x0000];
-#endif  
-  for (int j=0; j<cheight; j++) {
-    for (int i=0; i<256; i++) {
-#ifdef PET
-      *dst++ = src[i*cheight+j];
-#endif
-#ifdef TRS
-      *dst++ = ~src[i*cheight+j];
-#endif
-    }
-  }
-}
-
 static void __not_in_flash("VideoRenderLineBG") VideoRenderLineBG(uint8_t * linebuffer, int scanline)
 {
 #ifdef NO_HYPER
   // Background color
   uint32_t bgcolor32 = 0;
 #else
-  mem[REG_VSYNC] = scanline;
   // Background color
-  uint32_t bgcolor32 = (mem[REG_BG_COL]<<24)+(mem[REG_BG_COL]<<16)+(mem[REG_BG_COL]<<8)+(mem[REG_BG_COL]);
+  uint32_t bgcolor32 = (gfxmem[REG_BG_COL]<<24)+(gfxmem[REG_BG_COL]<<16)+(gfxmem[REG_BG_COL]<<8)+(gfxmem[REG_BG_COL]);
 #endif   
   uint32_t * dst32 = (uint32_t *)linebuffer;      
   if ( BG_COL_LINE_ENA ) 
   {
-    uint8_t bgcol = mem[REG_LINES_BG_COL+scanline];
+    uint8_t bgcol = gfxmem[REG_LINES_BG_COL+scanline];
     bgcolor32 = (bgcol<<24)+(bgcol<<16)+(bgcol<<8)+(bgcol);
   }
   RenderColor(dst32, bgcolor32, (screen_width/4));
@@ -230,13 +184,13 @@ static void __not_in_flash("VideoRenderLineL0") VideoRenderLineL0(uint8_t * line
   if (LAYER_L0_ENA)
   {
     scanline = (scanline + GET_YSCROLL_L0) % MAXHEIGHT;
-    int scroll = L0_XSCR_LINE_ENA?GET_XSCROLL_L0+( mem[REG_LINES_L0_XSCR+scanline] | ((mem[REG_LINES_XSCR_HI+scanline] & 0x0f)<<8) ):GET_XSCROLL_L0;
+    int scroll = L0_XSCR_LINE_ENA?GET_XSCROLL_L0+( gfxmem[REG_LINES_L0_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0x0f)<<8) ):GET_XSCROLL_L0;
     if ( L0_TILE_ENA )
     {
       uint8_t bgcolor = GET_BG_COL;
       if (L0_TILE_16_ENA) 
       {
-        unsigned char * tilept = &mem[(scanline >> 4)*(screen_width >> 4)+REG_TILEMAP_L0];
+        unsigned char * tilept = &gfxmem[(scanline >> 4)*(screen_width >> 4)+REG_TILEMAP_L0];
         uint8_t * src = &TileData[(scanline&15) << 4];
         int screen_width_in_tiles = screen_width >> 4;
         if (screen_width_in_tiles == 16) { 
@@ -251,7 +205,7 @@ static void __not_in_flash("VideoRenderLineL0") VideoRenderLineL0(uint8_t * line
       }
       else
       {
-        unsigned char * tilept = &mem[(scanline >> 3)*(screen_width >> 3)+REG_TILEMAP_L0];
+        unsigned char * tilept = &gfxmem[(scanline >> 3)*(screen_width >> 3)+REG_TILEMAP_L0];
         uint8_t * src = &TileData[(scanline&7) << 3];
         int screen_width_in_tiles = screen_width >> 3;
         if (screen_width_in_tiles == 32) { 
@@ -293,10 +247,10 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
 {
 #ifdef NO_HYPER
         int scroll = 0;
-#ifdef PET        
+#ifdef PET    
         uint8_t fgcolor = 0xff;
         int screen_width_in_chars = screen_width >> 3;
-        unsigned char * charpt = &mem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
+        unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
         unsigned char * fontpt = &font[(scanline&0x7)*256+(font_lowercase?0x800:0x000)];
         if (screen_width_in_chars == 32) { 
           TextBlitKey32(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
@@ -330,10 +284,10 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
       scanline = (scanline + GET_YSCROLL_L1) % MAXHEIGHT;    
       if ( L1_TILE_ENA )
       {
-        int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( mem[REG_LINES_L1_XSCR+scanline] | ((mem[REG_LINES_XSCR_HI+scanline] & 0x0f)<<8) ):GET_XSCROLL_L1;
+        int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0x0f)<<8) ):GET_XSCROLL_L1;
         if (L1_TILE_16_ENA) 
         {
-          unsigned char * tilept = &mem[(scanline >> 4)*(screen_width >> 4)+REG_TILEMAP_L1];
+          unsigned char * tilept = &gfxmem[(scanline >> 4)*(screen_width >> 4)+REG_TILEMAP_L1];
           uint8_t * src = &TileData[(scanline&15) << 4];
           int screen_width_in_tiles = screen_width >> 4;
           if (screen_width_in_tiles == 16) {
@@ -348,7 +302,7 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
         }
         else
         {
-          unsigned char * tilept = &mem[(scanline >> 3)*(screen_width >> 3)+REG_TILEMAP_L1];
+          unsigned char * tilept = &gfxmem[(scanline >> 3)*(screen_width >> 3)+REG_TILEMAP_L1];
           uint8_t * src = &TileData[(scanline&7) << 3];
           int screen_width_in_tiles = screen_width >> 3;
           if (screen_width_in_tiles == 32) {
@@ -364,12 +318,12 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
       }
       else
       {
-#ifdef PET        
+#ifdef PET   
         uint8_t fgcolor = GET_FG_COL;
         int screen_width_in_chars = screen_width >> 3;
-        unsigned char * charpt = &mem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
+        unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
         unsigned char * fontpt = &font[(scanline&0x7)*256+(font_lowercase?0x800:0x000)];
-        int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( mem[REG_LINES_L1_XSCR+scanline] | ((mem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
+        int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
         if (screen_width_in_chars == 32) { 
           TextBlitKey32(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
         }
@@ -386,7 +340,7 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
         int screen_width_in_chars = 64; //screen_width >> 3;{ 
         unsigned char * charpt = &memory[VIDEO_START + (scanline/12)*screen_width_in_chars];    
         unsigned char * fontpt = &font[(scanline%12)*256+(font_reversed?0x800:0x000)];
-        int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( mem[REG_LINES_L1_XSCR+scanline] | ((mem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
+        int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
         TextBlitKey64(linebuffer+64, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
 #endif        
       }
@@ -415,18 +369,6 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
     }
   }
 #endif  
-/*
-#ifndef HAS_PETIO
-#ifdef EMU_ACCURATE
-#ifdef ISRP2040 
-    multicore_fifo_push_blocking(0);
-#endif
-#ifdef ISRP2350 
-    multicore_doorbell_set_other_core(doorbell_id);
-#endif
-#endif 
-#endif
-*/
 }
 
 
@@ -506,7 +448,7 @@ static uint16_t tra_x;
 static uint16_t tra_w;
 static uint16_t tra_stride;
 static uint8_t tra_spr_id;
-static uint8_t * tra_pal = &mem[REG_TLOOKUP];
+static uint8_t * tra_pal = &gfxmem[REG_TLOOKUP];
 
 static QueueItem cmd_queue[CMD_QUEUE_SIZE];
 static uint8_t cmd_queue_rd=0;
@@ -542,7 +484,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
         break;
       case cmd_transfer_packed_bitmap_data:
         UnPack(0, &Bitmap[sizeof(Bitmap)-cmd.p16_1], &Bitmap[0], sizeof(Bitmap)-GFX_MARGIN);
-        //mem[REG_BG_COL] = 0xff;
+        //gfxmem[REG_BG_COL] = 0xff;
         break;      
       case cmd_tiles_clr:
         memset((void*)&TileData[0],0, sizeof(TileData));
@@ -556,32 +498,32 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
           strcat(scratchpad, "/");
           strcat(scratchpad, &files[cmd.p8_1][0]);
           if( !(f_open(&file, scratchpad , FA_READ)) ) {
-            //f_read (&file, (void*)&mem[REG_TLOOKUP+1], 255, &nbread);
+            //f_read (&file, (void*)&gfxmem[REG_TLOOKUP+1], 255, &nbread);
             //if (!nbread) f_close(&file);
             nbread = 1;
           }
         }
-        mem[REG_TLOOKUP] = nbread;
+        gfxmem[REG_TLOOKUP] = nbread;
         break;        
       case cmd_readfile:
         nbread = 0; 
         if (fatfs_mounted) {
-          f_read (&file, (void*)&mem[REG_TLOOKUP+1], cmd.p8_1, &nbread);
+          f_read (&file, (void*)&gfxmem[REG_TLOOKUP+1], cmd.p8_1, &nbread);
           if (!nbread) f_close(&file);
         }
-        mem[REG_TLOOKUP] = nbread;
+        gfxmem[REG_TLOOKUP] = nbread;
         break;        
       case cmd_opendir:
         nbFiles = 0;
         if (fatfs_mounted) {
           file_block_wr_pt = 1;
-          if (mem[REG_TLOOKUP] > 0x7f) {
-            mem[REG_TLOOKUP] = 0;
+          if (gfxmem[REG_TLOOKUP] > 0x7f) {
+            gfxmem[REG_TLOOKUP] = 0;
           }  
-          memcpy((void *)scratchpad, (void *)&mem[REG_TLOOKUP], 256);
+          memcpy((void *)scratchpad, (void *)&gfxmem[REG_TLOOKUP], 256);
           f_closedir(&dir);
           fres = f_findfirst(&dir, &entry, scratchpad, "*");
-          mem[REG_TLOOKUP]=0xff;
+          gfxmem[REG_TLOOKUP]=0xff;
           while ( (fres == FR_OK) && (entry.fname[0]) && (nbFiles<MAX_FILES) ) {  
             if (!entry.fname[0]) {
               f_closedir(&dir);
@@ -599,7 +541,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                      (filename[size-4] == 'p' ) && 
                      (filename[size-3] == 'r' ) && 
                      (filename[size-2] == 'g' ) ) {
-                  mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
                 }
                 else   
                 if ( (size > 4) && 
@@ -607,7 +549,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                      (filename[size-4] == 'b' ) && 
                      (filename[size-3] == 'i' ) && 
                      (filename[size-2] == 'n' ) ) {
-                  mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
+                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
                 }
 #endif
 #ifdef TRS
@@ -616,7 +558,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                      (filename[size-4] == 'c' ) && 
                      (filename[size-3] == 'm' ) && 
                      (filename[size-2] == 'd' ) ) {
-                  mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
                 }
 #endif
                 else {
@@ -624,23 +566,23 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                 }
               }
               else {
-                mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
+                gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
               }
               if (valid == true) {
-                file_block_wr_pt += mystrncpy((char*)&mem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
+                file_block_wr_pt += mystrncpy((char*)&gfxmem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
                 nbFiles++;
               }  
             }               
             fres = f_findnext(&dir, &entry);
           }
         }
-        mem[REG_TLOOKUP] = nbFiles;
+        gfxmem[REG_TLOOKUP] = nbFiles;
         break;
       case cmd_readdir:
         nbFiles = 0;
         if (fatfs_mounted) {
           file_block_wr_pt = 1;
-          mem[REG_TLOOKUP]=0xff;
+          gfxmem[REG_TLOOKUP]=0xff;
           while ( (fres == FR_OK) && (entry.fname[0]) && (nbFiles<MAX_FILES) ) {  
             if (!entry.fname[0]) {
               f_closedir(&dir);
@@ -658,7 +600,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                      (filename[size-4] == 'p' ) && 
                      (filename[size-3] == 'r' ) && 
                      (filename[size-2] == 'g' ) ) {
-                  mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
                 }
                 else   
                 if ( (size > 4) && 
@@ -666,7 +608,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                      (filename[size-4] == 'b' ) && 
                      (filename[size-3] == 'i' ) && 
                      (filename[size-2] == 'n' ) ) {
-                  mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
+                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
                 }
 #endif
 #ifdef TRS
@@ -675,7 +617,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                      (filename[size-4] == 'c' ) && 
                      (filename[size-3] == 'm' ) && 
                      (filename[size-2] == 'd' ) ) {
-                  mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
                 }
 #endif
                 else {
@@ -683,22 +625,22 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                 }
               }
               else {
-                mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
+                gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
               }
               if (valid == true) {
-                file_block_wr_pt += mystrncpy((char*)&mem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
+                file_block_wr_pt += mystrncpy((char*)&gfxmem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
                 nbFiles++;
               }  
             }               
             fres = f_findnext(&dir, &entry); 
           }
         }
-        mem[REG_TLOOKUP] = nbFiles;
+        gfxmem[REG_TLOOKUP] = nbFiles;
         break;     
       default:
         break;
     }
-    mem[REG_TSTATUS] = 0;
+    gfxmem[REG_TSTATUS] = 0;
   }  
 }
 
@@ -707,7 +649,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
 static void __not_in_flash("pushCmdQueue") pushCmdQueue(QueueItem cmd ) {
   if (cmd_queue_cnt != 256)
   {
-    mem[REG_TSTATUS] = 1;     
+    gfxmem[REG_TSTATUS] = 1;     
     cmd_queue[cmd_queue_wr] = cmd;
     cmd_queue_wr = (cmd_queue_wr + 1)&(CMD_QUEUE_SIZE-1);
     cmd_queue_cnt++;
@@ -776,7 +718,7 @@ static void __not_in_flash("traParamFuncBitmap") traParamFuncBitmap(void) {
 
 static void __not_in_flash("traParamFuncTmapcol") traParamFuncTmapcol(void) {
   tra_stride = screen_width/8;
-  tra_address = &mem[REG_TILEMAP_L0-TILEMAP_SIZE*cmd_params[0]+tra_stride*cmd_params[2]+cmd_params[1]];
+  tra_address = &gfxmem[REG_TILEMAP_L0-TILEMAP_SIZE*cmd_params[0]+tra_stride*cmd_params[2]+cmd_params[1]];
   tra_x = 0; 
   tra_w = 1;
   tra_h = cmd_params[3];
@@ -784,7 +726,7 @@ static void __not_in_flash("traParamFuncTmapcol") traParamFuncTmapcol(void) {
 
 static void __not_in_flash("traParamFuncTmaprow") traParamFuncTmaprow(void) {
   tra_stride = screen_width/8; 
-  tra_address = &mem[REG_TILEMAP_L0-TILEMAP_SIZE*cmd_params[0]+tra_stride*cmd_params[2]+cmd_params[1]];
+  tra_address = &gfxmem[REG_TILEMAP_L0-TILEMAP_SIZE*cmd_params[0]+tra_stride*cmd_params[2]+cmd_params[1]];
   tra_x = 0; 
   tra_w = cmd_params[3];
   tra_h = 1; 
@@ -827,7 +769,7 @@ static void __not_in_flash("traParamFuncFont") traParamFuncFont(void) {
 static void __not_in_flash("traParamFuncExecuteCommand") traParamFuncExecuteCommand(void) {
   if (cmd_queue_cnt != 256)
   {
-    mem[REG_TSTATUS] = 1;     
+    gfxmem[REG_TSTATUS] = 1;     
     cmd_queue[cmd_queue_wr] = {cmd};
     cmd_queue_wr = (cmd_queue_wr + 1)&(CMD_QUEUE_SIZE-1);
     cmd_queue_cnt++;
@@ -837,7 +779,7 @@ static void __not_in_flash("traParamFuncExecuteCommand") traParamFuncExecuteComm
 static void __not_in_flash("traParamFuncExecuteCommand1") traParamFuncExecuteCommand1(void) {
   if (cmd_queue_cnt != 256)
   {
-    mem[REG_TSTATUS] = 1; 
+    gfxmem[REG_TSTATUS] = 1; 
     cmd_queue[cmd_queue_wr] = {cmd,cmd_params[0]};
     cmd_queue_wr = (cmd_queue_wr + 1)&(CMD_QUEUE_SIZE-1);
     cmd_queue_cnt++;
@@ -957,7 +899,7 @@ static void __not_in_flash("traDataFuncPtr") (*traDataFuncPtr[])(uint8_t) = {
   traDataFunc8nolut  // 15
 };
 
-void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint32_t address, uint8_t value) {
+void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t value) {
 #ifdef PET  
   switch (address-0x8000) 
 #endif
@@ -1003,27 +945,284 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint32_t address, uint8_t val
       break;
     default:
 #ifdef PET  
-      mem[address-0x8000] = value;
+      gfxmem[address-0x8000] = value;
 #endif
 #ifdef TRS
-      mem[address-0xe000] = value;
+      gfxmem[address-0xe000] = value;
 #endif
       break;
   } 
 }
 
-void HyperGfxInit(void)
-{
-  ResetGFXMem();
+uint8_t __not_in_flash("HyperGfxread") HyperGfxRead(uint16_t address) {
+#ifdef PET
+  return gfxmem[address-0x8000];  
+#endif
+#ifdef TRS
+  return gfxmem[address-0xe000];;
+#endif
+
 }
 
-static int test=0;
+void __not_in_flash("VideoRenderUpdate") VideoRenderUpdate(void)
+{
+    gfxmem[REG_VSYNC] = MAXHEIGHT;
+
+#ifdef HAS_SND
+//static int oldv=-1;
+//  int v = vcount;
+//  if (v != oldv) {
+    sid_dump();  
+//    oldv = v;
+//  }
+#endif
+
+#ifdef PET    
+    int vmode = GET_VIDEO_MODE;
+    if (video_mode != vmode) {
+      if (vmode == 0) {hdmi_init(MODE_VGA_640x240);screen_width=640;}  
+      else if (vmode == 1) {hdmi_init(MODE_VGA_320x240);screen_width=320;} 
+      else {hdmi_init(MODE_VGA_256x240);screen_width=256;}
+      video_mode = vmode;
+    }
+#endif
+    
+    // sort sprites by Y, max amount sprites per scanline
+    memset((void*)&SpriteYSorted[0],0, sizeof(SpriteYSorted));
+    for (int i = 0; i < SPRITE_NUM_MAX; i++)
+    { 
+      if (gfxmem[REG_SPRITE_Y+i] < MAXHEIGHT)
+      {  
+        SpriteYSorted[gfxmem[REG_SPRITE_Y+i]].count++;
+      }
+      else {
+        SpriteParams[i].y = MAXHEIGHT;  
+      }   
+    }  
+    // Sort sprites by Y
+    int nextid = 1;
+    for (int i = 0; i < SPRITE_NUM_MAX; i++)
+    { 
+      uint8_t y = gfxmem[REG_SPRITE_Y+i];
+      if (y < MAXHEIGHT) {      
+        if ( (SpriteYSorted[y].count) && (SpriteYSorted[y].first == 0) ) {
+          SpriteYSorted[y].first = nextid;
+          nextid += SpriteYSorted[y].count;
+          SprYSortedIndexes[y] = 0;
+        }
+        if (SpriteYSorted[y].count) 
+        {
+          SprYSortedIds[SpriteYSorted[y].first+SprYSortedIndexes[y]] = i;
+          SprYSortedIndexes[y]++;
+        }
+      }
+    } 
+    // update sprites params
+    int cur = 0;
+    for (int j = 0; j < MAXHEIGHT; j++)
+    {
+      for (int i=0;i<SpriteYSorted[j].count; i++) 
+      {
+        if (i<SPRITE_NUM)
+        {
+          if (cur < SPRITE_NUM_MAX) {
+            int ind = SprYSortedIds[SpriteYSorted[j].first+i];
+            uint8_t id = gfxmem[REG_SPRITE_IND+ind];
+            uint16_t x = (gfxmem[REG_SPRITE_XHI+ind]<<8)+gfxmem[REG_SPRITE_XLO+ind];    
+            uint8_t y = gfxmem[REG_SPRITE_Y+ind];
+            SpriteParams[cur].x = x;
+            SpriteParams[cur].dataIndex = SpriteIdToDataIndex[id & 0x3f];
+            SpriteParams[cur].y = y;
+            SpriteParams[cur].h = SpriteDataH[id & 0x3f];
+            SpriteParams[cur].flipH = (id & 0x40);
+            SpriteParams[cur].flipV = (id & 0x80);
+            cur++;       
+          }  
+        }
+        else 
+        {
+          break;
+        }
+      }  
+    }
+    for (int i=cur; i < SPRITE_NUM_MAX; i++)
+    {
+      SpriteParams[cur].y = MAXHEIGHT;
+    }
+
+    // sprite collision for first 8 sprites
+    for (int i = 0; i < SPRITE_NUM_MAX; i++)
+    {
+      uint16_t x1 = (gfxmem[REG_SPRITE_XHI+i]<<8)+gfxmem[REG_SPRITE_XLO+i];    
+      uint8_t y1 = gfxmem[REG_SPRITE_Y+i];
+      uint8_t id1 = gfxmem[REG_SPRITE_IND+i]&0x3f;
+      // hflip
+      if (gfxmem[REG_SPRITE_IND+i] & 0x40) x1 = SPRITEW-x1;
+      // vflip
+      if (gfxmem[REG_SPRITE_IND+i] & 0x80) y1 = SpriteDataW[id1]-y1;
+      uint8_t colbits = 0;
+      if (id1) {
+        for (int k = 0; k < 8; k++)
+        {
+          if (k != i) {
+            uint16_t x = (gfxmem[REG_SPRITE_XHI+k]<<8)+gfxmem[REG_SPRITE_XLO+k];    
+            uint8_t y  = gfxmem[REG_SPRITE_Y+k];
+            uint8_t id = gfxmem[REG_SPRITE_IND+k]&0x3f;
+            // hflip
+            if (gfxmem[REG_SPRITE_IND+k] & 0x40) x = SPRITEW-x;
+            // vflip
+            if (gfxmem[REG_SPRITE_IND+k] & 0x80) y = SpriteDataW[id]-y;            
+            if ( (id) && (x >= x1) && (x < (x1+SpriteDataW[id1])) && (y >= y1) && (y < (y1+SpriteDataH[id1])) )
+            {
+              colbits += (1<<k);
+            }
+            
+            if ( (id) && (x1 >= x) && (x1 < (x+SpriteDataW[id])) && (y1 >= y) && (y1 < (y+SpriteDataH[id])) )
+            {
+              colbits += (1<<k);
+            }
+          }           
+        }
+      }   
+      gfxmem[REG_SPRITE_COL_LO+i] = colbits;
+      /*
+      colbits = 0;
+      if (id1) {
+        for (int k = 8; k < 16; k++)
+        {
+          if (k != i) {
+            uint16_t x = (gfxmem[REG_SPRITE_XHI+k]<<8)+gfxmem[REG_SPRITE_XLO+k];    
+            uint8_t y  = gfxmem[REG_SPRITE_Y+k];
+            uint8_t id = gfxmem[REG_SPRITE_IND+k]&0x3f;
+            // hflip
+            if (gfxmem[REG_SPRITE_IND+k] & 0x40) x = SPRITEW-x;
+            // vflip
+            if (gfxmem[REG_SPRITE_IND+k] & 0x80) y = SpriteDataW[id]-y;            
+            if ( (id) && (x >= x1) && (x < (x1+SpriteDataW[id1])) && (y >= y1) && (y < (y1+SpriteDataH[id1])) )
+            {
+              colbits += (1<<(k-8));
+            }
+            
+            if ( (id) && (x1 >= x) && (x1 < (x+SpriteDataW[id])) && (y1 >= y) && (y1 < (y+SpriteDataH[id])) )
+            {
+              colbits += (1<<(k-8));
+            }
+          }           
+        }
+      }   
+      gfxmem[REG_SPRITE_COL_HI+i] = colbits;
+      */       
+    }   
+}
+
+
+void __not_in_flash("HyperGfxInit") HyperGfxInit(void) 
+{
+#ifdef NO_HYPER
+#else
+#ifdef HAS_SND
+  audio_init(1024, audio_fill_buffer);
+  playSID.begin(SOUNDRATE, 512); 
+#endif
+  memset((void*)&Bitmap[0],0, sizeof(Bitmap));
+  memset((void*)&TileData[0],0, sizeof(TileData));
+  memset((void*)&SpriteData[0],0, sizeof(SpriteData));
+
+#ifdef PET
+  uint8_t palntsc = gfxmem[REG_PALNTSC];
+  memset((void*)&gfxmem[0x0000], 0, 0x2000); // all registers and videomem  
+#endif
+#ifdef PET
+  gfxmem[REG_PALNTSC] = palntsc;
+  SET_BG_COL(VGA_RGB(0x00,0x00,0x00));
+  SET_FG_COL(VGA_RGB(0x00,0xff,0x00));
+#endif
+#ifdef TRS
+  // end of TRS memory
+  memory[0xe000] = 0xff;
+  SET_BG_COL(VGA_RGB(0x00,0x00,0x00));
+  SET_FG_COL(VGA_RGB(0xff,0xff,0xff));
+#endif  
+  // 0: L0 tiles + L1 petfont
+  // 1: L0 tiles + L1 tiles
+  // 2: L0 tiles
+  // 3: L0 bitmap  
+//  SET_LAYER_MODE( LAYER_L0_TILE | LAYER_L1_TILE | LAYER_L2_SPRITE );
+//  SET_LAYER_MODE( LAYER_L0_TILE | LAYER_L1_PETFONT | LAYER_L2_SPRITE );
+  SET_LAYER_MODE( LAYER_L0_TILE | LAYER_L1_PETFONT | LAYER_L2_SPRITE | LAYER_L2_INBETW );    
+
+  // prepare sprites
+  for (int i = 0; i < SPRITE_NUM_MAX; i++)
+  {
+    SpriteParams[i].x = 0;
+    SpriteParams[i].h = 0;
+    SpriteParams[i].y = MAXHEIGHT;
+    SpriteParams[i].flipH = 0;
+    SpriteParams[i].flipV = 0;
+    SpriteParams[i].dataIndex = 0;
+  }
+
+  // Init tile map with something
+  /*
+  for (int i=0;i<TILEMAP_SIZE;i++) 
+  {
+    gfxmem[REG_TILEMAP_L0+i] = i&255;  // L0 tiles
+    gfxmem[REG_TEXTMAP_L1+i] = i&255;  // L1 text
+    gfxmem[REG_TILEMAP_L1+i] = i&255;  // L1 tiles
+  }
+  */
+  /*
+  // init raster colors
+  for (int i=0;i<MAXHEIGHT;i++) 
+  {
+    gfxmem[REG_LINES_BG_COL+i] = VGA_RGB(i&7*32,0,0); // Lines BG colors
+  }
+  */
+#endif
+
+#ifdef PET
+  int cheight = 8;
+  uint8_t* src=(uint8_t*)&petfont[0x0000];
+#endif
+#ifdef TRS
+  int cheight = 12;
+  uint8_t* src=(uint8_t*)&font_m3[0x0000];
+#endif  
+  uint8_t* dst=font;
+  for (int j=0; j<cheight; j++) {
+    for (int i=0; i<256; i++) {
+      *dst++ = src[i*cheight+j];
+    }
+  }
+#ifdef PET
+  src=(uint8_t*)&petfont[0x0800];
+#endif
+#ifdef TRS
+  src=(uint8_t*)&font_m3[0x0000];
+#endif  
+  for (int j=0; j<cheight; j++) {
+    for (int i=0; i<256; i++) {
+#ifdef PET
+      *dst++ = src[i*cheight+j];
+#endif
+#ifdef TRS
+//      *dst++ = ~src[i*cheight+j];
+#endif
+    }
+  }
+
+  if ( video_default == VMODE_HIRES ) {
+    SET_VIDEO_MODE(0);
+  }  
+  else {
+    SET_VIDEO_MODE(1);
+  }
+}
 
 void HyperGfxFlashFSInit(void)
 {
   fatfs_mounted = mount_fatfs_disk();
   if (fatfs_mounted) {
-
     fres = f_mount(&filesystem, "/", 1);
 #ifdef PET
     // read HYPERPET.CFG
@@ -1035,10 +1234,12 @@ void HyperGfxFlashFSInit(void)
         if (!strncmp(scratchpad, "columns=", 8)) {
           if ( (scratchpad[8]=='8') && (scratchpad[9]=='0') ) {
             video_default = VMODE_HIRES;
+            screen_width=640;
           }
           else 
           if ( (scratchpad[8]=='4') && (scratchpad[9]=='0') ) {
             video_default = VMODE_LORES;
+            screen_width=320;
           }
         }
         else 
@@ -1060,44 +1261,31 @@ void HyperGfxFlashFSInit(void)
       }
       f_close(&file);
     }
+    //// force lores
+    //video_default = VMODE_LORES;
+    //screen_width=320;
 #endif
+#ifdef TRS
+#ifdef HAS_USBHOST          
+    kbd_set_locale(KLAYOUT_BE);
+#endif
+#endif
+  }
+}
 
-/*
-strcat(scratchpad, "/PET/");
-          f_closedir(&dir);
-          fres = f_findfirst(&dir, &entry, scratchpad, "*");
-          while ( (fres == FR_OK) && (entry.fname[0]) && (nbFiles<MAX_FILES) ) {  
-            if (!entry.fname[0]) {
-              f_closedir(&dir);
-              break;
-            }
-            bool valid = true;
-            char * filename = entry.fname;
-            int size = mystrncpy(&files[nbFiles][0], filename, MAX_FILENAME_SIZE-1); // including eol (0)
-            if (entry.fname[0] != '.' ) { // skip any MACOS file but also ".", ".."
-              // not a directory
-              if ( !(entry.fattrib & AM_DIR) ) {
-                      test=1;
-              }
-              else {
-                //mem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
-              }
-                nbFiles++;
-            }               
-            fres = f_findnext(&dir, &entry);
-          }
-*/
-
-  }    
+void __not_in_flash("HyperGfxReset") HyperGfxReset(void)
+{
+  gfx_reset = true;
 }
 
 void __not_in_flash("HyperGfxHandleGfx") HyperGfxHandleGfx(void)
 {
   int scanline = 0;
-  tft.waitLine(8);
+  //hdmi_wait_line(8);
   for (int i = 8; i < 408; i = i + 2) {
-      //tft.waitLine(i);
-      uint8_t * linebuffer = (uint8_t *)tft.getLineBuffer(scanline);
+      hdmi_wait_line(i);
+      uint8_t * linebuffer = hdmi_get_line_buffer(scanline);
+      gfxmem[REG_VSYNC] = scanline;
       VideoRenderLineBG(linebuffer, scanline);            
       VideoRenderLineL0(linebuffer, scanline);
 #ifdef TRS             
@@ -1106,5 +1294,26 @@ void __not_in_flash("HyperGfxHandleGfx") HyperGfxHandleGfx(void)
       VideoRenderLineL1(linebuffer, scanline);
       scanline++;
   }
+  gfxmem[REG_VSYNC] = MAXHEIGHT;
+  if (gfx_reset) {
+    gfx_reset = false;
+    HyperGfxInit();
+  }
+  VideoRenderUpdate();
+#ifdef HAS_SND  
+  audio_handle();
+#endif  
+}
+
+void HyperGfxVsync(void) {
+  hdmi_wait_line(400);  
+}
+
+bool HyperGfxIsHires(void) {
+  return (video_mode == VMODE_HIRES);   
+}
+
+bool HyperGfxIsPal(void) {
+  return (gfxmem[REG_PALNTSC] == 0);   
 }
 

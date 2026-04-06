@@ -17,14 +17,15 @@ set(CMAKE_CXX_STANDARD 17)
 # Initialize the Pico SDK
 pico_sdk_init()
 
-include_directories(${TARGET})
 include_directories(config)
 include_directories(display)
 include_directories(gfx)
 include_directories(flashfs)
 include_directories(flashfs/fatfs)
 include_directories(decomp)
+include_directories(resid)
 include_directories(usb_serial)
+include_directories(usb_kbd)
 if( ${TARGET} MATCHES "hypertrspico" )
 include_directories(trs80)
 endif()
@@ -33,15 +34,7 @@ include_directories(pet)
 endif()
 include_directories(.)
 
-if( ${TARGET} MATCHES "hypertrspico" )
-set(HYPERTRSPICO_SOURCES 
-		hypertrspico/hypertrspico.cpp
-		hypertrspico/pioirq.S
-	)
-endif()
-
-set(DISPLAY_SOURCES 
-		display/pico_dsp.cpp		
+set(DISPLAY_SOURCES 	
 		display/hdmi_framebuffer.cpp	
 	)
 
@@ -58,6 +51,11 @@ set(DECOMP_SOURCES
 		decomp/decrunch.c
 	)
 
+set(SID_SOURCES 
+		resid/sid.cpp
+		resid/reSID.cpp	
+	)
+
 set(FF_SOURCES
 		flashfs/fatfs_disk_ro.c
 		flashfs/fatfs/ff.c	
@@ -65,29 +63,45 @@ set(FF_SOURCES
 		flashfs/fatfs/ffunicode.c
 	)
 
-
 set(USBSERIAL_SOURCES
 		usb_serial/dev_lowlevel.c
 	)
 
+set(USBKBD_SOURCES
+		usb_kbd/hid_app.c
+	)
+
+
+if( ${TARGET} MATCHES "hyperpetpico" )
+set(MAIN_SOURCES
+		main.cpp
+		pet/mos6502.cpp
+		pet/memmap.cpp
+	)
+endif()
+
 if( ${TARGET} MATCHES "hypertrspico" )
 set(MAIN_SOURCES
+		main.cpp
 		trs80/z80.cpp
 		trs80/trs_memory.cpp
 		trs80/trs.cpp
 		trs80/io.cpp
 		trs80/memmap.cpp
+		trs80/pioirq.S
 	)
 endif()
 
+
 add_executable(${TARGET}
-		${HYPERTRSPICO_SOURCES}
 		${DISPLAY_SOURCES}
 		${GFXRENDER_SOURCES}
 		${MAIN_SOURCES}
 		${DECOMP_SOURCES}
+		${SID_SOURCES}		
 		${FF_SOURCES}
 		${USBSERIAL_SOURCES}
+		${USBKBD_SOURCES}		
 	)
 
 
@@ -99,8 +113,8 @@ target_link_libraries(${TARGET} pico_multicore
 	    hardware_pio
         hardware_pwm	    
         hardware_flash
-#        tinyusb_host 
-#       tinyusb_board
+        tinyusb_host 
+        tinyusb_board
 #		tinyusb_pico_pio_usb
 	)
 
@@ -113,6 +127,10 @@ target_link_libraries(${TARGET} pico_multicore
 if( ${TARGET} MATCHES "hypertrspico" )
 pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/trs80/clock.pio)
 pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/trs80/busreadwrite.pio)
+endif()
+
+if( ${TARGET} MATCHES "hyperpetpico" )
+pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/pet/petbus.pio)
 endif()
 
 if( ${TARGET} MATCHES "hypertrspico" )

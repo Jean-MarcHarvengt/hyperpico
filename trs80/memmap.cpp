@@ -1,4 +1,5 @@
 #include <string.h>
+#include <ctype.h>
 
 #include "pico/multicore.h"
 #include "hardware/pio.h"
@@ -11,6 +12,20 @@ extern "C" {
   #include "iopins.h"   
 }
 
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+#include "tools/z80assembler/fb.h"
+
+#ifdef HAS_USBHOST
+#include "bsp/board_api.h"
+#include "tusb.h"
+#include "kbd.h"
+extern "C" void hid_app_task(void);
+#else
+#include "usb_serial.h"
+#endif
+#endif
+
+
 #ifdef CPU_Z80
 #include "clock.pio.h"
 #endif
@@ -20,8 +35,6 @@ extern "C" {
 
 #include "trs_memory.h"
 #include "trs_screen.h"
-
-
 
 #define PIO_DIV 1.0f
 
@@ -37,13 +50,32 @@ static uint clock_sm;
 #define ADDBUS_WIDTH 16
 #define ADDBUS_MASK  (MEM_SIZE-1) 
 
-uint8_t memory[MEM_SIZE]; //__attribute__ ((aligned (MEM_SIZE)));
+uint8_t memory[MEM_SIZE];
 static uint32_t armaddr = ((uint32_t)memory);
 
 static bool got_reset=false;
 
-#ifdef BUS_DEBUG
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+#ifdef HAS_USBHOST
+// ****************************************
+// USB keyboard
+// ****************************************
+static int prev_code=0;
 
+static uint8_t joystick0 = 0xff;
+static bool kbdasjoy = false;
+// Joystick macros
+#define JOY_UP      (1)
+#define JOY_DOWN    (2)
+#define JOY_LEFT    (4)
+#define JOY_RIGHT   (8) 
+#define JOY_FIRE    (1+2)
+#endif
+#endif
+
+
+
+#ifdef BUS_DEBUG
 static uint8_t addr[256];
 static uint8_t memptr=0;
 //static uint8_t rderror=0;
@@ -110,20 +142,20 @@ static void __not_in_flash("DebugShow") DebugShow(void)
 // TRS Memory
 // ****************************************
 #ifdef CPU_EMU  
-static uint8_t __not_in_flash("readNone") readNone(uint32_t address) {
+static uint8_t __not_in_flash("readNone") readNone(uint16_t address) {
   return (0xff);
 #else
-static void __not_in_flash("readNone") readNone(uint32_t address) {
+static void __not_in_flash("readNone") readNone(uint16_t address) {
   bus_pio->txf[bus_smr] = 0;
 #endif  
 }
 
 #ifdef CPU_EMU  
-static uint8_t __not_in_flash("readMEM") readMEM(uint32_t address) {
+static uint8_t __not_in_flash("readMEM") readMEM(uint16_t address) {
   if (address == 0) got_reset=true;
   return (memory[address]);
 #else
-static void __not_in_flash("readMEM") readMEM(uint32_t address) {
+static void __not_in_flash("readMEM") readMEM(uint16_t address) {
   if (address == 0) got_reset=true;
   bus_pio->txf[bus_smr] = 0x100 | memory[address];  
 #endif  
@@ -131,13 +163,13 @@ static void __not_in_flash("readMEM") readMEM(uint32_t address) {
 
 #include "trs_keyboard.h"
 #ifdef CPU_EMU  
-static uint8_t __not_in_flash("readVKMEM") readVKMEM(uint32_t address) {
+static uint8_t __not_in_flash("readVKMEM") readVKMEM(uint16_t address) {
   if (address >= VIDEO_START )
     return (memory[address]);  
   else
     return trs_kb_mem_read(address);
 #else
-static void __not_in_flash("readVKMEM") readVKMEM(uint32_t address) {
+static void __not_in_flash("readVKMEM") readVKMEM(uint16_t address) {
   if (address >= VIDEO_START )
     bus_pio->txf[bus_smr] = 0x100 | memory[address];  
   else
@@ -145,23 +177,23 @@ static void __not_in_flash("readVKMEM") readVKMEM(uint32_t address) {
 #endif  
 }
 
-static void __not_in_flash("writeNone") writeNone(uint32_t address, uint8_t value) {
+static void __not_in_flash("writeNone") writeNone(uint16_t address, uint8_t value) {
 }
 
-static void __not_in_flash("writeMEM") writeMEM(uint32_t address, uint8_t value) {
+static void __not_in_flash("writeMEM") writeMEM(uint16_t address, uint8_t value) {
   memory[address]=value;
 }
 
-static void __not_in_flash("writeMEMTOP") writeMEMTOP(uint32_t address, uint8_t value) {
+static void __not_in_flash("writeMEMTOP") writeMEMTOP(uint16_t address, uint8_t value) {
   if (address >= 0xe701) // top of memory, begining File Browser rom
     memory[address]=value;
 }
 
 
 #ifdef CPU_EMU  
-uint8_t __not_in_flash("readFuncTable") (*readFuncTable[32])(uint32_t)
+uint8_t __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
 #else
-void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint32_t)
+void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
 #endif
 {
 #if (defined(CPU_EMU) || defined(CPU_Z80))
@@ -242,7 +274,7 @@ void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint32_t)
 #endif
 };
 
-void __not_in_flash("writeFuncTable") (*writeFuncTable[32])(uint32_t,uint8_t)
+void __not_in_flash("writeFuncTable") (*writeFuncTable[32])(uint16_t,uint8_t)
 {
   writeNone, // 00
   writeNone, // 08
@@ -520,7 +552,211 @@ static void run_pio(void) {
 #endif
 }
 
-extern void SystemReset(void);
+
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+
+// ****************************************
+// Keyboard
+// ****************************************
+#define KEY_DEBOUNCE_MS 50
+#define BOOT_SEQ_MS 700
+
+static int prev_key = 0;
+static int repeat_cnt = 0;
+static bool send_cmdstring = false;
+static char * cmdstring_pt;
+static char trsinitcmd[] = {0x01, 0x0d, 0x01, 0x01, 0x0d, 1, 1, 2, 'x','=','u','s','r','(','0',')',0x0d, 0};
+static char trsruncmd[] = {'x','=','u','s','r','(','0',')',0x0d, 0};
+
+// system (not working)
+// /57345 or -8191
+//
+// poke (working)
+//POKE 16526,1
+//POKE 16527,224
+//a=usr(0)
+
+
+
+static bool repeating_timer_callback(struct repeating_timer *t) {
+    if (repeat_cnt ) repeat_cnt--;
+    if (repeat_cnt == 0) {
+      if (prev_key) {
+        trs_process_asciikey(prev_key, false);
+        prev_key = 0;
+      }
+      if (send_cmdstring) {
+        if (*cmdstring_pt) {
+          int asciikey = *cmdstring_pt++&0x7f;
+          if (asciikey == 1) {
+            repeat_cnt = BOOT_SEQ_MS; 
+            prev_key = 0;
+          } 
+          else
+          if (asciikey == 2) {
+            memcpy((void*)&memory[fb[1]*256+fb[0]],(void*)&fb[2], sizeof(fb)-2);
+            memory[16526] = fb[0];
+            memory[16527] = fb[1];
+            prev_key = 0;
+          } 
+          else
+          if (asciikey) if ( trs_process_asciikey(asciikey, true) ) {
+            prev_key = asciikey;
+            repeat_cnt = KEY_DEBOUNCE_MS; 
+          }
+        }
+        else {
+          send_cmdstring = false;
+        }
+      }
+    } 
+    return true;
+}
+
+
+#ifdef HAS_USBHOST
+// ****************************************
+// USB keyboard
+// ****************************************
+void signal_joy (int code, int pressed) {
+  if ( (code == KBD_KEY_DOWN) && (pressed) ) joystick0 &= ~JOY_DOWN;
+  if ( (code == KBD_KEY_DOWN) && (!pressed) ) joystick0 |= JOY_DOWN;
+  if ( (code == KBD_KEY_UP) && (pressed) ) joystick0 &= ~JOY_UP;
+  if ( (code == KBD_KEY_UP) && (!pressed) ) joystick0 |= JOY_UP;
+  if ( (code == KBD_KEY_LEFT) && (pressed) ) joystick0 &= ~JOY_LEFT;
+  if ( (code == KBD_KEY_LEFT) && (!pressed) ) joystick0 |= JOY_LEFT;
+  if ( (code == KBD_KEY_RIGHT) && (pressed) ) joystick0 &= ~JOY_RIGHT;
+  if ( (code == KBD_KEY_RIGHT) && (!pressed) ) joystick0 |= JOY_RIGHT;
+  if ( (code == ' ') && (pressed) ) joystick0 &= ~JOY_FIRE;
+  if ( (code == ' ') && (!pressed) ) joystick0 |= JOY_FIRE;
+}
+
+void kbd_signal_raw_key (int keycode, int code, int codeshifted, int flags, int pressed) {
+  // LCTRL + LSHIFT + R => reset
+  if ( ( (flags & (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL)) == (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL) ) && (!pressed) && (code == 'r') ) {
+    got_reset = true;
+  }
+
+  // LCTRL + LSHIFT + J => keyboard as joystick
+  if ( ( (flags & (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL)) == (KBD_FLAG_LSHIFT + KBD_FLAG_LCONTROL) ) && (!pressed) && (code == 'j') ) {
+    if (kbdasjoy == true) kbdasjoy = false; 
+    else kbdasjoy = true;
+  }
+
+  //keyboard as joystick?
+  if (kbdasjoy == true) {
+      if (prev_code) signal_joy(prev_code, 0);
+      if (code) {
+        signal_joy(code, pressed);
+        if (pressed) prev_code = code;
+      }  
+      //mem[REG_TEXTMAP_L1] = joystick0;
+  }
+  else {
+    if (!(flags & (KBD_FLAG_RSHIFT + KBD_FLAG_RCONTROL))) {
+      if (codeshifted == '&') {code = '6'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '\"') {code = '2'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '\'') {code = '7'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '(') {code = '8'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '!') {code = '1'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '*') {code = ':'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '%') {code = '5'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '?') {code = '/'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '.') {code = '.'; flags |= 0; }
+      else if (codeshifted == '+') {code = ';'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '>') {code = '.'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == ')') {code = '9'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '$') {code = '4'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '=') {code = '-'; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == '<') {code = ','; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == KBD_KEY_DOWN) {code = 0x11; flags |= 0; }
+      else if (codeshifted == KBD_KEY_RIGHT) {code = 0x1D; flags |= 0; }
+      else if (codeshifted == KBD_KEY_UP) {code = 0x11; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == KBD_KEY_LEFT) {code = 0x1D; flags |= KBD_FLAG_RSHIFT; }
+      else if (codeshifted == KBD_KEY_ESC) {code = 0x9B; flags |= 0; }
+      // no PET chars for below characters!!!
+      else if (codeshifted == '@') {code = 0; flags |= 0; }
+      else if (codeshifted == '[') {code = 0; flags |= 0; }
+      else if (codeshifted == ']') {code = 0; flags |= 0; }
+      else if (codeshifted == '^') {code = 0; flags |= 0; }
+      else if (codeshifted == '{') {code = 0; flags |= 0; }
+      else if (codeshifted == '}') {code = 0; flags |= 0; }
+      else if (codeshifted == '_') {code = 0; flags |= 0; }
+      else if ( (codeshifted >= 'a') && (codeshifted <= 'z') ) { code = toupper(code); }
+      else if ( (codeshifted >= 'A') && (codeshifted <= 'Z') ) { code = codeshifted; flags |= KBD_FLAG_RSHIFT; }
+      else code = codeshifted;
+    }
+    else {
+      code = toupper(code);
+    }  
+
+//    if (prev_code) pet_kup(prev_code);
+    if (prev_code) trs_process_asciikey(prev_code, false);
+
+    if (code) {
+      if (pressed == KEY_PRESSED)
+      {
+        //pet_kdown(code, flags & KBD_FLAG_RSHIFT, flags & KBD_FLAG_RCONTROL);
+        trs_process_asciikey(code, true); 
+        prev_code = code;
+        //printf("kdown %c\r\n", kbd_to_ascii (code, flags));
+      }
+      else 
+      {
+        //pet_kup(code);
+        trs_process_asciikey(code, false); 
+        //printf("kup %c\r\n", kbd_to_ascii (code, flags));
+      }
+    }    
+  }  
+}
+
+
+#else
+// ****************************************
+// USB SERIAL server
+// ****************************************
+static int serial_rx(uint8_t* buf, int len) {
+  int asciikey;
+
+  if (len >= 1) {
+    
+    switch (buf[0]) {
+      case sercmd_reset:
+        trs_play(0);
+        break;
+      case sercmd_key:        
+        //cmd[3] = toupper((char)buf[1]);
+        asciikey = buf[1]&0x7f;
+        if (asciikey) if ( trs_process_asciikey(asciikey, true) ) {
+          prev_key = asciikey;
+          repeat_cnt = KEY_DEBOUNCE_MS; 
+        }
+        //pet_command( &cmd[0] );
+        break;
+      case sercmd_prg:
+        //trs_pauze();
+        for (int i=0; i < (len-3); i++) {
+          memory[((buf[1]<<8)+buf[2])+i] = buf[3+i];
+        }   
+        break;
+      case sercmd_run:
+        memory[16526] = buf[2];
+        memory[16527] = buf[1];
+        cmdstring_pt = &trsruncmd[0];
+        send_cmdstring = true; 
+        //trs_play((buf[1]<<8)+buf[2]);
+        break;
+      default:
+        break;
+    }
+  }  
+  return 0;
+}
+#endif
+
+#endif
+
 
 static void __not_in_flash("pio_core") pio_core(void)
 {
@@ -530,51 +766,39 @@ static void __not_in_flash("pio_core") pio_core(void)
   while(true) { 
 #ifdef CPU_EMU
     trs_step();
-#endif 
+#endif
     if (got_reset) {
         got_reset = false;
-        SystemReset();
+        HyperGfxReset();
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+        prev_key = 0;
+        cmdstring_pt = &trsinitcmd[0];
+        send_cmdstring = true;
+        repeat_cnt = 0; 
+#endif
     }
     //HdmiHandleAudio(); 
     __dmb();
   }
 }
 
-/*
-.ORG   $e001   
+void start_system(void) 
+{
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+#ifdef HAS_USBHOST
+    board_init();
+    // init host stack on configured roothub port
+    tuh_init(BOARD_TUH_RHPORT);
+#else
+    usb_serial_init(&serial_rx);
+#endif
+  struct repeating_timer timer;
+  add_repeating_timer_ms(-1, repeating_timer_callback, NULL, &timer); 
+  cmdstring_pt = &trsinitcmd[0];
+  send_cmdstring = true;
+  repeat_cnt = 0; 
+#endif
 
-start:    
-LD   hl,scr   
-LD   (hl),$48   
-INC   hl   
-LD   (hl),$45   
-INC   hl   
-LD   (hl),$4C   
-INC   hl   
-LD   (hl),$4C   
-INC   hl   
-LD   (hl),$4f   
-INC   hl   
-JP   start   
-.ORG   $3C00   
-SCR:      
-*/
-
-
-// system (not working)
-// /57345 or -8191
-//
-// poke (working)
-//POKE 16526,1
-//POKE 16527,224
-//a=usr(0)
-const unsigned char browser_rom[] = {   
-0x00,0x21,0x00,0x3C,0x36,0x48,0x23,0x36,0x45,0x23,0x36,0x4C,
-0x23,0x36,0x4C,0x23,0x36,0x4F,0x23,0xC3,0x01,0xE0
-};            
-
-
-void start_system(void) {
   HyperGfxFlashFSInit();  
   //trs_screen_setMode(MODE_TEXT_80x24);
   trs_screen_setMode(MODE_TEXT_64x16);
@@ -583,8 +807,6 @@ void start_system(void) {
 #endif  
 
   HyperGfxInit();
-
-  //memcpy((void*)&memory[0xe000], (void*)browser_rom, sizeof(browser_rom));
 
 #ifdef CPU_EMU
   trs_init();
@@ -608,7 +830,18 @@ void start_system(void) {
 #ifdef BUS_DEBUG
     DebugShow();    
 #endif
-    HyperGfxHandleCmdQueue();    
+    HyperGfxHandleCmdQueue();
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+#ifdef HAS_USBHOST
+    // tinyusb host task
+    tuh_task();
+    hid_app_task();
+#endif
+#endif        
     __dmb();        
   }
+}
+
+void wait_ms(int ms) {
+  sleep_ms(ms);
 }

@@ -10,6 +10,8 @@
 #include <errno.h>
 #include <string.h>
 
+#include "pico.h"
+
 #include "hypergfx.h"
 
 extern void wait_ms(int ms);

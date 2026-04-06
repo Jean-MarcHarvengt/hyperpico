@@ -2,8 +2,8 @@
 #define MEMMAP_H
 
 
-//#define CPU_EMU       1
-#define CPU_Z80       1
+#define CPU_EMU       1
+//#define CPU_Z80       1
 //#define TRS_48K       1
 //#define TRS_16K       1
 //#define TRS_4K        1
@@ -191,56 +191,56 @@
 #define REG_SPRITE_COL_LO (0xff00 - 0xe000) // 40704
 #define REG_SPRITE_COL_HI (0xff80 - 0xe000) // 40832
 
-#define GET_VIDEO_MODE    ( mem[REG_VIDEO_MODE] )
-#define GET_BG_COL        ( mem[REG_BG_COL] )
-#define GET_FG_COL        ( mem[REG_FG_COL] )
-#define GET_XSCROLL_L0    ( mem[REG_XSCROLL_L0] | ((mem[REG_XSCROLL_HI] & 0x0f)<<8) )
-#define GET_YSCROLL_L0    ( mem[REG_YSCROLL_L0] )
-#define GET_XSCROLL_L1    ( mem[REG_XSCROLL_L1] | ((mem[REG_XSCROLL_HI] & 0xf0)<<4) )
-#define GET_YSCROLL_L1    ( mem[REG_YSCROLL_L1] )
-#define GET_SC_START_L0   ( mem[REG_SC_START_L0] & 31 )
-#define GET_SC_END_L0     ( mem[REG_SC_END_L0] & 31 )
-#define GET_SC_START_L1   ( mem[REG_SC_START_L1] & 31 )
-#define GET_SC_END_L1     ( mem[REG_SC_END_L1] & 31 )
-#define GET_TSTATUS       ( mem[REG_TSTATUS] )
+#define GET_VIDEO_MODE    ( gfxmem[REG_VIDEO_MODE] )
+#define GET_BG_COL        ( gfxmem[REG_BG_COL] )
+#define GET_FG_COL        ( gfxmem[REG_FG_COL] )
+#define GET_XSCROLL_L0    ( gfxmem[REG_XSCROLL_L0] | ((gfxmem[REG_XSCROLL_HI] & 0x0f)<<8) )
+#define GET_YSCROLL_L0    ( gfxmem[REG_YSCROLL_L0] )
+#define GET_XSCROLL_L1    ( gfxmem[REG_XSCROLL_L1] | ((gfxmem[REG_XSCROLL_HI] & 0xf0)<<4) )
+#define GET_YSCROLL_L1    ( gfxmem[REG_YSCROLL_L1] )
+#define GET_SC_START_L0   ( gfxmem[REG_SC_START_L0] & 31 )
+#define GET_SC_END_L0     ( gfxmem[REG_SC_END_L0] & 31 )
+#define GET_SC_START_L1   ( gfxmem[REG_SC_START_L1] & 31 )
+#define GET_SC_END_L1     ( gfxmem[REG_SC_END_L1] & 31 )
+#define GET_TSTATUS       ( gfxmem[REG_TSTATUS] )
 
-#define SET_VIDEO_MODE(x) { mem[REG_VIDEO_MODE] = x; }
-#define SET_BG_COL(x)     { mem[REG_BG_COL] = x; }
-#define SET_FG_COL(x)     { mem[REG_FG_COL] = x; }
-#define SET_XSCROLL_L0(x) { mem[REG_XSCROLL_L0] = x & 0xff; mem[REG_XSCROLL_HI] &= 0xf0; mem[REG_XSCROLL_HI] |= (x>>8); }
-#define SET_XSCROLL_L1(x) { mem[REG_XSCROLL_L1] = x & 0xff; mem[REG_XSCROLL_HI] &= 0x0f; mem[REG_XSCROLL_HI] |= ((x>>4)&0xf0); }
-#define SET_YSCROLL_L0(x) { mem[REG_YSCROLL_L0] = x; }
-#define SET_YSCROLL_L1(x) { mem[REG_YSCROLL_L1] = x; }
-#define SET_SC_START_L0(x) { mem[REG_SC_START_L0] = x & 31; }
-#define SET_SC_END_L0(x)  { mem[REG_SC_END_L0] = x & 31; }
-#define SET_SC_START_L1(x) { mem[REG_SC_START_L1] = x & 31; }
-#define SET_SC_END_L1(x)  { mem[REG_SC_END_L1] = x & 31; }
+#define SET_VIDEO_MODE(x) { gfxmem[REG_VIDEO_MODE] = x; }
+#define SET_BG_COL(x)     { gfxmem[REG_BG_COL] = x; }
+#define SET_FG_COL(x)     { gfxmem[REG_FG_COL] = x; }
+#define SET_XSCROLL_L0(x) { gfxmem[REG_XSCROLL_L0] = x & 0xff; gfxmem[REG_XSCROLL_HI] &= 0xf0; gfxmem[REG_XSCROLL_HI] |= (x>>8); }
+#define SET_XSCROLL_L1(x) { gfxmem[REG_XSCROLL_L1] = x & 0xff; gfxmem[REG_XSCROLL_HI] &= 0x0f; gfxmem[REG_XSCROLL_HI] |= ((x>>4)&0xf0); }
+#define SET_YSCROLL_L0(x) { gfxmem[REG_YSCROLL_L0] = x; }
+#define SET_YSCROLL_L1(x) { gfxmem[REG_YSCROLL_L1] = x; }
+#define SET_SC_START_L0(x) { gfxmem[REG_SC_START_L0] = x & 31; }
+#define SET_SC_END_L0(x)  { gfxmem[REG_SC_END_L0] = x & 31; }
+#define SET_SC_START_L1(x) { gfxmem[REG_SC_START_L1] = x & 31; }
+#define SET_SC_END_L1(x)  { gfxmem[REG_SC_END_L1] = x & 31; }
 
-#define SET_LAYER_MODE(x) { mem[REG_LAYERS_CFG] = x; }
-#define SET_LINE_MODE(x)  { mem[REG_LINES_CFG] = x; }
-#define SET_TILE_MODE(x)  { mem[REG_TILES_CFG] = x; }
+#define SET_LAYER_MODE(x) { gfxmem[REG_LAYERS_CFG] = x; }
+#define SET_LINE_MODE(x)  { gfxmem[REG_LINES_CFG] = x; }
+#define SET_TILE_MODE(x)  { gfxmem[REG_TILES_CFG] = x; }
 
 
-#define VIDEO_MODE_HIRES  ( mem[REG_VIDEO_MODE] == 0 )  
-#define LAYER_L0_ENA      ( mem[REG_LAYERS_CFG] & 0x1  )  
-#define LAYER_L1_ENA      ( mem[REG_LAYERS_CFG] & 0x2  )  
-#define LAYER_L2_ENA      ( mem[REG_LAYERS_CFG] & 0x4  )
-#define L2_BETWEEN_ENA    ( mem[REG_LAYERS_CFG] & 0x8  )
-#define L0_TILE_ENA       ( mem[REG_LAYERS_CFG] & 0x10 )  
-#define L1_TILE_ENA       ( mem[REG_LAYERS_CFG] & 0x20 )
-#define L0_AREA_ENA       ( mem[REG_LAYERS_CFG] & 0x40 )   
-#define L1_AREA_ENA       ( mem[REG_LAYERS_CFG] & 0x80 )   
+#define VIDEO_MODE_HIRES  ( gfxmem[REG_VIDEO_MODE] == 0 )  
+#define LAYER_L0_ENA      ( gfxmem[REG_LAYERS_CFG] & 0x1  )  
+#define LAYER_L1_ENA      ( gfxmem[REG_LAYERS_CFG] & 0x2  )  
+#define LAYER_L2_ENA      ( gfxmem[REG_LAYERS_CFG] & 0x4  )
+#define L2_BETWEEN_ENA    ( gfxmem[REG_LAYERS_CFG] & 0x8  )
+#define L0_TILE_ENA       ( gfxmem[REG_LAYERS_CFG] & 0x10 )  
+#define L1_TILE_ENA       ( gfxmem[REG_LAYERS_CFG] & 0x20 )
+#define L0_AREA_ENA       ( gfxmem[REG_LAYERS_CFG] & 0x40 )   
+#define L1_AREA_ENA       ( gfxmem[REG_LAYERS_CFG] & 0x80 )   
 
-#define BG_COL_LINE_ENA   ( mem[REG_LINES_CFG]  & 0x01 )
-#define L0_XSCR_LINE_ENA  ( mem[REG_LINES_CFG]  & 0x02 )
-#define L1_XSCR_LINE_ENA  ( mem[REG_LINES_CFG]  & 0x04 )
+#define BG_COL_LINE_ENA   ( gfxmem[REG_LINES_CFG]  & 0x01 )
+#define L0_XSCR_LINE_ENA  ( gfxmem[REG_LINES_CFG]  & 0x02 )
+#define L1_XSCR_LINE_ENA  ( gfxmem[REG_LINES_CFG]  & 0x04 )
 
-#define L0_TILE_16_ENA    ( mem[REG_TILES_CFG]  & 0x01 )
-#define L1_TILE_16_ENA    ( mem[REG_TILES_CFG]  & 0x02 )
-#define HCURTAIN8_ENA     ( (mem[REG_TILES_CFG] & (0x04+0x08)) == (0x04) )
-#define HCURTAIN16_ENA    ( (mem[REG_TILES_CFG] & (0x04+0x08)) == (0x04+0x08) )
-#define VCURTAIN8_ENA     ( (mem[REG_TILES_CFG] & (0x20+0x40)) == (0x20) )
-#define VCURTAIN16_ENA    ( (mem[REG_TILES_CFG] & (0x20+0x40)) == (0x20+0x40) )
+#define L0_TILE_16_ENA    ( gfxmem[REG_TILES_CFG]  & 0x01 )
+#define L1_TILE_16_ENA    ( gfxmem[REG_TILES_CFG]  & 0x02 )
+#define HCURTAIN8_ENA     ( (gfxmem[REG_TILES_CFG] & (0x04+0x08)) == (0x04) )
+#define HCURTAIN16_ENA    ( (gfxmem[REG_TILES_CFG] & (0x04+0x08)) == (0x04+0x08) )
+#define VCURTAIN8_ENA     ( (gfxmem[REG_TILES_CFG] & (0x20+0x40)) == (0x20) )
+#define VCURTAIN16_ENA    ( (gfxmem[REG_TILES_CFG] & (0x20+0x40)) == (0x20+0x40) )
 
 #define LAYER_L0_BITMAP   ( 0x1 )  
 #define LAYER_L0_TILE     ( 0x1 | 0x10 )  
@@ -261,8 +261,6 @@
 #define HCURTAIN_16       ( 0x4 + 0x8 ) 
 #define VCURTAIN_8        ( 0x20 )  
 #define VCURTAIN_16       ( 0x20 + 0x40 )  
-
-extern unsigned char *mem;
 
 extern uint8_t memory[];
 
