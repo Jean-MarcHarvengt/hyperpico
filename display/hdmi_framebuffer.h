@@ -61,6 +61,12 @@ extern void hdmi_vsync(void);
 extern void hdmi_wait_line(int line);
 
 #ifdef HAS_SND
+
+//#define SOUNDRATE 22050                           // sound rate [Hz]
+#define SOUNDRATE 44100                           // sound rate [Hz]
+typedef short  audio_sample;
+
+
 extern void audio_init(int samplesize, void (*callback)(audio_sample * stream, int len));
 extern void audio_handle(void);
 extern void * audio_get_buffer();

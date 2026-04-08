@@ -27,7 +27,7 @@
 #include "reSID.h"
 #include <math.h>
 
-#define CLOCKFREQ 985248
+#define CLOCKFREQ 1023000 //NTSC vs PAL 985248
 
 void AudioPlaySID::begin(float samplerate, int blocksize)
 {

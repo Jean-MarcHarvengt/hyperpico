@@ -901,9 +901,6 @@ static void __not_in_flash("pio_core") pio_core(void)
       HyperGfxReset();
     }
 #endif 
-#ifdef HAS_SND  
-//    audio_handle();
-#endif  
     __dmb();
   }
 }

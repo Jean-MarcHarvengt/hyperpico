@@ -969,12 +969,7 @@ void __not_in_flash("VideoRenderUpdate") VideoRenderUpdate(void)
     gfxmem[REG_VSYNC] = MAXHEIGHT;
 
 #ifdef HAS_SND
-//static int oldv=-1;
-//  int v = vcount;
-//  if (v != oldv) {
     sid_dump();  
-//    oldv = v;
-//  }
 #endif
 
 #ifdef PET    
