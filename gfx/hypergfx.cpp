@@ -160,19 +160,19 @@ static void sid_dump( void )
 // ****************************************
 static void __not_in_flash("VideoRenderLineBG") VideoRenderLineBG(uint8_t * linebuffer, int scanline)
 {
+  uint32_t * dst32 = (uint32_t *)linebuffer;      
 #ifdef NO_HYPER
   // Background color
   uint32_t bgcolor32 = 0;
 #else
   // Background color
   uint32_t bgcolor32 = (gfxmem[REG_BG_COL]<<24)+(gfxmem[REG_BG_COL]<<16)+(gfxmem[REG_BG_COL]<<8)+(gfxmem[REG_BG_COL]);
-#endif   
-  uint32_t * dst32 = (uint32_t *)linebuffer;      
   if ( BG_COL_LINE_ENA ) 
   {
     uint8_t bgcol = gfxmem[REG_LINES_BG_COL+scanline];
     bgcolor32 = (bgcol<<24)+(bgcol<<16)+(bgcol<<8)+(bgcol);
   }
+#endif   
   RenderColor(dst32, bgcolor32, (screen_width/4));
 }
 
@@ -248,7 +248,7 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
 #ifdef NO_HYPER
         int scroll = 0;
 #ifdef PET    
-        uint8_t fgcolor = 0xff;
+        uint8_t fgcolor = 0x1c;
         int screen_width_in_chars = screen_width >> 3;
         unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
         unsigned char * fontpt = &font[(scanline&0x7)*256+(font_lowercase?0x800:0x000)];
@@ -468,6 +468,8 @@ static int __not_in_flash("mystrncpy") mystrncpy( char* dst, const char* src, in
 }
 
 void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
+#ifdef NO_HYPER
+#else  
   unsigned int nbread; 
   if (cmd_queue_cnt)
   {
@@ -642,6 +644,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
     }
     gfxmem[REG_TSTATUS] = 0;
   }  
+#endif
 }
 
 
@@ -900,6 +903,7 @@ static void __not_in_flash("traDataFuncPtr") (*traDataFuncPtr[])(uint8_t) = {
 };
 
 void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t value) {
+#ifndef NO_HYPER
 #ifdef PET  
   switch (address-0x8000) 
 #endif
@@ -952,6 +956,14 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t val
 #endif
       break;
   } 
+#else
+#ifdef PET  
+  gfxmem[address-0x8000] = value;
+#endif
+#ifdef TRS
+  gfxmem[address-0xe000] = value;
+#endif
+#endif
 }
 
 uint8_t __not_in_flash("HyperGfxread") HyperGfxRead(uint16_t address) {
@@ -961,16 +973,15 @@ uint8_t __not_in_flash("HyperGfxread") HyperGfxRead(uint16_t address) {
 #ifdef TRS
   return gfxmem[address-0xe000];;
 #endif
-
 }
 
 void __not_in_flash("VideoRenderUpdate") VideoRenderUpdate(void)
 {
-    gfxmem[REG_VSYNC] = MAXHEIGHT;
-
 #ifdef HAS_SND
     sid_dump();  
 #endif
+
+#ifndef NO_HYPER
 
 #ifdef PET    
     int vmode = GET_VIDEO_MODE;
@@ -1108,6 +1119,7 @@ void __not_in_flash("VideoRenderUpdate") VideoRenderUpdate(void)
       gfxmem[REG_SPRITE_COL_HI+i] = colbits;
       */       
     }   
+#endif
 }
 
 
@@ -1173,6 +1185,12 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
     gfxmem[REG_LINES_BG_COL+i] = VGA_RGB(i&7*32,0,0); // Lines BG colors
   }
   */
+  if ( video_default == VMODE_HIRES ) {
+    SET_VIDEO_MODE(0);
+  }  
+  else {
+    SET_VIDEO_MODE(1);
+  }  
 #endif
 
 #ifdef PET
@@ -1204,13 +1222,6 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
 //      *dst++ = ~src[i*cheight+j];
 #endif
     }
-  }
-
-  if ( video_default == VMODE_HIRES ) {
-    SET_VIDEO_MODE(0);
-  }  
-  else {
-    SET_VIDEO_MODE(1);
   }
 }
 
@@ -1261,6 +1272,27 @@ void HyperGfxFlashFSInit(void)
     //screen_width=320;
 #endif
 #ifdef TRS
+    // read HYPERTRS.CFG
+    if( !(f_open(&file, "HYPERTRS.CFG" , FA_READ)) ) {
+      while (f_gets(scratchpad, 256, &file) != NULL)  {
+        if (!strncmp(scratchpad, "ram=", 4)) {
+          if ( (scratchpad[4]=='8') && (scratchpad[4]=='0') ) {
+          }
+        }
+        else 
+        if (!strncmp(scratchpad, "keyboard=", 9)) {
+#ifdef HAS_USBHOST          
+          if ( ( scratchpad[9]=='u') && (scratchpad[10]=='k') ) {
+            kbd_set_locale(KLAYOUT_UK);
+          }
+          else if ( ( scratchpad[9]=='b') && (scratchpad[10]=='e') ) {
+            kbd_set_locale(KLAYOUT_BE);
+          }
+#endif 
+        }
+      }
+      f_close(&file);
+    }
 #ifdef HAS_USBHOST          
     kbd_set_locale(KLAYOUT_BE);
 #endif
@@ -1280,7 +1312,9 @@ void __not_in_flash("HyperGfxHandleGfx") HyperGfxHandleGfx(void)
   for (int i = 8; i < 408; i = i + 2) {
       hdmi_wait_line(i);
       uint8_t * linebuffer = hdmi_get_line_buffer(scanline);
+#ifndef NO_HYPER     
       gfxmem[REG_VSYNC] = scanline;
+#endif
       VideoRenderLineBG(linebuffer, scanline);            
       VideoRenderLineL0(linebuffer, scanline);
 #ifdef TRS             
@@ -1289,7 +1323,9 @@ void __not_in_flash("HyperGfxHandleGfx") HyperGfxHandleGfx(void)
       VideoRenderLineL1(linebuffer, scanline);
       scanline++;
   }
+#ifndef NO_HYPER     
   gfxmem[REG_VSYNC] = MAXHEIGHT;
+#endif
   if (gfx_reset) {
     gfx_reset = false;
     HyperGfxInit();

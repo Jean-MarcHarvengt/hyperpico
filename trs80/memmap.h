@@ -18,8 +18,8 @@
 // e000-ffff: memory map GFX+SOUND expansion
 //
 // RESOLUTION:
-// 640x200 HI_RES   (PET8032)
-// 320x200 LO_RES   (PET4032)
+// 640x200 HI_RES  
+// 320x200 LO_RES  
 // 256x200 GAME_RES (New resolution suitable for 80's ARCADE games)
 //
 // LAYERING:

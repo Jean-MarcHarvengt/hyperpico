@@ -4,8 +4,7 @@
 #include "platform_config.h"
 
 #define VGA_DMA_CHANNEL 2 // requires 2 channels
-#define TFT_DMA_CHANNEL 2 // requires 1 channel
-#define AUD_DMA_CHANNEL 4 // requires 1 or 3 channels
+#define AUD_DMA_CHANNEL 4 // requires 1 channel
 #define PIO_DMA_CHANNEL 5 // requires 2 channels pio
 
 //#####################################################

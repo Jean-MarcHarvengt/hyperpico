@@ -42,6 +42,7 @@
 #include "hardware/pwm.h"
 #include "pico/float.h"
 #include "pico/stdlib.h"
+
 #include "iopins.h"
 
 
@@ -132,8 +133,8 @@ static void set_hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, u
     bool half_width = (width == 320);
 
     irq_set_enabled(DMA_IRQ_0, false);
-    dma_channel_abort(self->dma_pixel_channel);
-    dma_channel_abort(self->dma_command_channel);
+    dma_channel_abort(VGA_DMA_CHANNEL);
+    dma_channel_abort(VGA_DMA_CHANNEL+1);
     sleep_ms(30);
     memset((void*)&framebuffer[0],0, MAX_FB_WIDTH*MAX_FB_HEIGHT);
 

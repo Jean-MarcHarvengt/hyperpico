@@ -1,3 +1,7 @@
+#include "platform_config.h"
+
+
+#ifdef HAS_USBHOST
 /*
  * The MIT License (MIT)
  *
@@ -612,3 +616,4 @@ void kbd_set_locale(KLAYOUT layout)
 {
   klayout = layout;
 }
+#endif

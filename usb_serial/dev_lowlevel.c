@@ -1,3 +1,8 @@
+#include "platform_config.h"
+
+
+#ifndef HAS_USBHOST
+
 /**
  * Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
  *
@@ -31,10 +36,10 @@
 
 // Function prototypes for our device specific endpoint handlers defined
 // later on
-void ep0_in_handler(uint8_t *buf, uint16_t len);
-void ep0_out_handler(uint8_t *buf, uint16_t len);
-void ep1_out_handler(uint8_t *buf, uint16_t len);
-void ep2_in_handler(uint8_t *buf, uint16_t len);
+static void ep0_in_handler(uint8_t *buf, uint16_t len);
+static void ep0_out_handler(uint8_t *buf, uint16_t len);
+static void ep1_out_handler(uint8_t *buf, uint16_t len);
+static void ep2_in_handler(uint8_t *buf, uint16_t len);
 
 // Global device address
 static bool should_set_address = false;
@@ -95,7 +100,7 @@ static struct usb_device_configuration dev_config = {
  * @param addr
  * @return struct usb_endpoint_configuration*
  */
-struct usb_endpoint_configuration *usb_get_endpoint_configuration(uint8_t addr) {
+static struct usb_endpoint_configuration *usb_get_endpoint_configuration(uint8_t addr) {
     struct usb_endpoint_configuration *endpoints = dev_config.endpoints;
     for (int i = 0; i < USB_NUM_ENDPOINTS; i++) {
         if (endpoints[i].descriptor && (endpoints[i].descriptor->bEndpointAddress == addr)) {
@@ -111,7 +116,7 @@ struct usb_endpoint_configuration *usb_get_endpoint_configuration(uint8_t addr) 
  * @param C string you would like to send to the USB host
  * @return the length of the string descriptor in EP0 buf
  */
-uint8_t usb_prepare_string_descriptor(const unsigned char *str) {
+static uint8_t usb_prepare_string_descriptor(const unsigned char *str) {
     // 2 for bLength + bDescriptorType + strlen * 2 because string is unicode. i.e. other byte will be 0
     uint8_t bLength = 2 + (strlen((const char *)str) * 2);
     static const uint8_t bDescriptorType = 0x03;
@@ -146,7 +151,7 @@ static inline uint32_t usb_buffer_offset(volatile uint8_t *buf) {
  *
  * @param ep
  */
-void usb_setup_endpoint(const struct usb_endpoint_configuration *ep) {
+static void usb_setup_endpoint(const struct usb_endpoint_configuration *ep) {
     printf("Set up endpoint 0x%x with buffer address 0x%p\n", ep->descriptor->bEndpointAddress, ep->data_buffer);
 
     // EP0 doesn't have one so return if that is the case
@@ -180,7 +185,7 @@ void usb_setup_endpoints() {
  * @brief Set up the USB controller in device mode, clearing any previous state.
  *
  */
-void usb_device_init() {
+static void usb_device_init() {
     // Reset usb controller
     reset_unreset_block_num_wait_blocking(RESET_USBCTRL);
 
@@ -235,7 +240,7 @@ static inline bool ep_is_tx(struct usb_endpoint_configuration *ep) {
  * @param buf, the data buffer to send. Only applicable if the endpoint is TX
  * @param len, the length of the data in buf (this example limits max len to one packet - 64 bytes)
  */
-void usb_start_transfer(struct usb_endpoint_configuration *ep, uint8_t *buf, uint16_t len) {
+static void usb_start_transfer(struct usb_endpoint_configuration *ep, uint8_t *buf, uint16_t len) {
     // We are asserting that the length is <= 64 bytes for simplicity of the example.
     // For multi packet transfers see the tinyusb port.
     assert(len <= 64);
@@ -277,7 +282,7 @@ void usb_handle_device_descriptor(volatile struct usb_setup_packet *pkt) {
  *
  * @param pkt, the setup packet received from the host.
  */
-void usb_handle_config_descriptor(volatile struct usb_setup_packet *pkt) {
+static void usb_handle_config_descriptor(volatile struct usb_setup_packet *pkt) {
     uint8_t *buf = &ep0_buf[0];
 
     // First request will want just the config descriptor
@@ -324,7 +329,7 @@ void usb_bus_reset(void) {
  *
  * @param pkt, the setup packet from the host.
  */
-void usb_handle_string_descriptor(volatile struct usb_setup_packet *pkt) {
+static void usb_handle_string_descriptor(volatile struct usb_setup_packet *pkt) {
     uint8_t i = pkt->wValue & 0xff;
     uint8_t len = 0;
 
@@ -342,7 +347,7 @@ void usb_handle_string_descriptor(volatile struct usb_setup_packet *pkt) {
 /**
  * @brief Sends a zero length status packet back to the host.
  */
-void usb_acknowledge_out_request(void) {
+static void usb_acknowledge_out_request(void) {
     usb_start_transfer(usb_get_endpoint_configuration(EP0_IN_ADDR), NULL, 0);
 }
 
@@ -353,7 +358,7 @@ void usb_acknowledge_out_request(void) {
  *
  * @param pkt, the setup packet from the host.
  */
-void usb_set_device_address(volatile struct usb_setup_packet *pkt) {
+static void usb_set_device_address(volatile struct usb_setup_packet *pkt) {
     // Set address is a bit of a strange case because we have to send a 0 length status packet first with
     // address 0
     dev_addr = (pkt->wValue & 0xff);
@@ -369,7 +374,7 @@ void usb_set_device_address(volatile struct usb_setup_packet *pkt) {
  *
  * @param pkt, the setup packet from the host.
  */
-void usb_set_device_configuration(__unused volatile struct usb_setup_packet *pkt) {
+static void usb_set_device_configuration(__unused volatile struct usb_setup_packet *pkt) {
     // Only one configuration so just acknowledge the request
     printf("Device Enumerated\r\n");
     usb_acknowledge_out_request();
@@ -380,7 +385,7 @@ void usb_set_device_configuration(__unused volatile struct usb_setup_packet *pkt
  * @brief Respond to a setup packet from the host.
  *
  */
-void usb_handle_setup_packet(void) {
+static void usb_handle_setup_packet(void) {
     volatile struct usb_setup_packet *pkt = (volatile struct usb_setup_packet *) &usb_dpram->setup_packet;
     uint8_t req_direction = pkt->bmRequestType;
     uint8_t req = pkt->bRequest;
@@ -533,7 +538,7 @@ void isr_usbctrl(void) {
  * @param buf the data that was sent
  * @param len the length that was sent
  */
-void ep0_in_handler(__unused uint8_t *buf, __unused uint16_t len) {
+static void ep0_in_handler(__unused uint8_t *buf, __unused uint16_t len) {
     if (should_set_address) {
         // Set actual device address in hardware
         usb_hw->dev_addr_ctrl = dev_addr;
@@ -545,13 +550,13 @@ void ep0_in_handler(__unused uint8_t *buf, __unused uint16_t len) {
     }
 }
 
-void ep0_out_handler(__unused uint8_t *buf, __unused uint16_t len) {
+static void ep0_out_handler(__unused uint8_t *buf, __unused uint16_t len) {
 }
 
 static int (*serial_rx)(uint8_t *buf, int bytes) = NULL;
 
 // Device specific functions
-void ep1_out_handler(uint8_t *buf, uint16_t len) {
+static void ep1_out_handler(uint8_t *buf, uint16_t len) {
     if (serial_rx != NULL) serial_rx(buf, len);
     //printf("RX %d bytes from host\n", len);
     // Send data back to host
@@ -560,7 +565,7 @@ void ep1_out_handler(uint8_t *buf, uint16_t len) {
 }
 
 
-void ep2_in_handler(__unused uint8_t *buf, uint16_t len) {
+static void ep2_in_handler(__unused uint8_t *buf, uint16_t len) {
     printf("Sent %d bytes to host\n", len);
     // Get ready to rx again from host
     usb_start_transfer(usb_get_endpoint_configuration(EP1_OUT_ADDR), NULL, 64);
@@ -584,4 +589,4 @@ void usb_serial_init(int (*receive_cb)(uint8_t * buf, int bytes)) {
     // Get ready to rx from host
     usb_start_transfer(usb_get_endpoint_configuration(EP1_OUT_ADDR), NULL, MAX_PACKET_SIZE);
 }
-
+#endif

@@ -713,11 +713,15 @@ void kbd_signal_raw_key (int keycode, int code, int codeshifted, int flags, int 
 
 
 #else
+//static uint8_t memo[0x10000];
+
 // ****************************************
 // USB SERIAL server
 // ****************************************
-static int serial_rx(uint8_t* buf, int len) {
+//static int serial_rx(uint8_t* buf, int len) {
+static int __not_in_flash_func(serial_rx)(uint8_t* buf, int len) {
   int asciikey;
+  uint16_t addr;
 
   if (len >= 1) {
     
@@ -726,26 +730,36 @@ static int serial_rx(uint8_t* buf, int len) {
         trs_play(0);
         break;
       case sercmd_key:        
-        //cmd[3] = toupper((char)buf[1]);
         asciikey = buf[1]&0x7f;
         if (asciikey) if ( trs_process_asciikey(asciikey, true) ) {
           prev_key = asciikey;
           repeat_cnt = KEY_DEBOUNCE_MS; 
         }
-        //pet_command( &cmd[0] );
         break;
       case sercmd_prg:
-        //trs_pauze();
-        for (int i=0; i < (len-3); i++) {
-          memory[((buf[1]<<8)+buf[2])+i] = buf[3+i];
-        }   
+        if (len>3) {
+          //addr = 0x4000; //0x3c00;
+          //addr = ((uint16_t)buf[1]<<8)+buf[2];
+          //sleep_ms(100);
+          //memory[0x3c00] = buf[3]; //memory[0x3c00]+1;
+//          for (int i=0; i < (len-3); i++) {
+//            memory[0x3c00+i] = buf[i<62?i:0];
+//            if (i<62) memory[0x3c00+i] = buf[i];
+//            if ( ( (addr+i) >= 0x4000 ) && ((addr+i) < 0x4100 ) ) memory[addr+i] = buf[i];
+//            memory[addr+i] = buf[i];
+//          }
+          //memory[(buf[1]<<8)+buf[2]] = buf[3];
+          //memcpy((void*)&memo[(buf[1]<<8)+buf[2]],(void*)&buf[3], len-3);
+          for (int i=0; i < (len-3); i++) {
+            memory[((buf[1]<<8)+buf[2])+i] = buf[3+i];
+          }
+        }
         break;
       case sercmd_run:
         memory[16526] = buf[2];
         memory[16527] = buf[1];
         cmdstring_pt = &trsruncmd[0];
         send_cmdstring = true; 
-        //trs_play((buf[1]<<8)+buf[2]);
         break;
       default:
         break;
@@ -771,10 +785,12 @@ static void __not_in_flash("pio_core") pio_core(void)
         got_reset = false;
         HyperGfxReset();
 #if (defined(CPU_EMU) || defined(CPU_Z80))
+#ifndef NO_HYPER        
         prev_key = 0;
         cmdstring_pt = &trsinitcmd[0];
         send_cmdstring = true;
         repeat_cnt = 0; 
+#endif
 #endif
     }
     //HdmiHandleAudio(); 
@@ -786,7 +802,7 @@ void start_system(void)
 {
 #if (defined(CPU_EMU) || defined(CPU_Z80))
 #ifdef HAS_USBHOST
-    board_init();
+    //board_init();
     // init host stack on configured roothub port
     tuh_init(BOARD_TUH_RHPORT);
 #else
@@ -794,9 +810,11 @@ void start_system(void)
 #endif
   struct repeating_timer timer;
   add_repeating_timer_ms(-1, repeating_timer_callback, NULL, &timer); 
+#ifndef NO_HYPER
   cmdstring_pt = &trsinitcmd[0];
   send_cmdstring = true;
-  repeat_cnt = 0; 
+  repeat_cnt = 0;
+#endif   
 #endif
 
   HyperGfxFlashFSInit();  

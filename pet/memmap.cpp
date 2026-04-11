@@ -885,9 +885,11 @@ static void __not_in_flash("pio_core") pio_core(void)
       prev_key = 0;
       pet_start();      
       pet_running = true;
+#ifndef NO_HYPER      
       cmdstring_pt = &petfbcmd[0];
       send_cmdstring = true;
       repeat_cnt = 0;
+#endif      
     }
     for (int i = 8; i < 408; i = i + 2) {
         hdmi_wait_line(i);
@@ -906,34 +908,34 @@ static void __not_in_flash("pio_core") pio_core(void)
 }
 
 
-
-
 void start_system(void) 
 {
 #ifdef CPU_EMU
 #ifdef HAS_USBHOST
-    board_init();
-    // init host stack on configured roothub port
-    tuh_init(BOARD_TUH_RHPORT);
+  //board_init();
+  tuh_init(BOARD_TUH_RHPORT);
 #else
-    usb_serial_init(&serial_rx);
+  usb_serial_init(&serial_rx);
 #endif
   struct repeating_timer timer;
-  add_repeating_timer_ms(-1, repeating_timer_callback, NULL, &timer); 
+  add_repeating_timer_ms(-1, repeating_timer_callback, NULL, &timer);
+#ifndef NO_HYPER
   cmdstring_pt = &petfbcmd[0];
   send_cmdstring = true;
   repeat_cnt = 0;
+#endif  
 #endif
 
   HyperGfxFlashFSInit();  
   HyperGfxInit();
 
+#ifndef NO_HYPER
   // A000 area content is file browser default
 #ifdef PETIO_A000
   memcpy((void *)&mem_a000[0], (void *)fb, sizeof(fb));
 //  memcpy((void *)&mem_a000[0], (void *)vsync, sizeof(vsync));
 #endif 
-
+#endif
 
 #ifdef CPU_EMU
   pet_start(); 
@@ -962,5 +964,4 @@ void start_system(void)
 #endif        
     __dmb();        
   }
-
 }

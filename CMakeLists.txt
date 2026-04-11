@@ -115,14 +115,15 @@ target_link_libraries(${TARGET} pico_multicore
         hardware_flash
         tinyusb_host 
         tinyusb_board
-#		tinyusb_pico_pio_usb
+		tinyusb_pico_pio_usb
 	)
 
 
 
-#target_compile_definitions(${TARGET} PRIVATE
-#        PIO_USB_DP_PIN_DEFAULT=2
-#    )
+target_compile_definitions(${TARGET} PRIVATE
+        PIO_USB_DP_PIN_DEFAULT=2
+		PICO_DEFAULT_PIO_USB_DP_PIN=2
+    )
 
 if( ${TARGET} MATCHES "hypertrspico" )
 pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/trs80/clock.pio)
@@ -141,7 +142,7 @@ target_compile_options(${TARGET} PUBLIC -DPET)
 endif()
 
 
-#target_compile_definitions(${TARGET} PRIVATE PICO_CLOCK_AJDUST_PERI_CLOCK_WITH_SYS_CLOCK=1)
+target_compile_definitions(${TARGET} PRIVATE PICO_CLOCK_AJDUST_PERI_CLOCK_WITH_SYS_CLOCK=1)
 
 #target_compile_definitions(${TARGET} PRIVATE CFG_TUSB_DEBUG=2)
 #target_compile_options(${TARGET} PUBLIC -O2)
