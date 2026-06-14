@@ -13,7 +13,8 @@ uint32_t wifi_init(void)
       return ip;
   }
 #ifdef WIFI_AP
-  cyw43_arch_enable_ap_mode("hyperpetpico", "picopet123", CYW43_AUTH_WPA2_MIXED_PSK );
+//  cyw43_arch_enable_ap_mode("hyperpico", "hyperpico123?", CYW43_AUTH_WPA2_MIXED_PSK );
+  cyw43_arch_enable_ap_mode("hyperpico", "hyperpico123?", CYW43_AUTH_OPEN );
   //CYW43_AUTH_WPA2_MIXED_PSK
   //CYW43_AUTH_OPEN
   printf("Connecting to WiFi...\n");

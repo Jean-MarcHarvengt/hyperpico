@@ -2,8 +2,8 @@ db 1 ; code segment
 db (code_end-code_start)+2
 dw code_start
 
-;ORG   $e001   
-ORG   $4000   
+ORG   $e001   
+;ORG   $4000   
 
 code_start: 
 start:

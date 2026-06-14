@@ -27,8 +27,10 @@ static Z80Context z80ctx;
 // ****************************************
 // TRS Memory
 // ****************************************
-extern void (*writeFuncTable[32])(uint32_t,uint8_t);
-extern uint8_t (*readFuncTable[32])(uint32_t);
+typedef uint8_t (*ReadFunc)(uint16_t);
+extern ReadFunc __not_in_flash("readFuncTable") * readFuncTable;
+typedef void (*WriteFunc)(uint16_t,uint8_t);
+extern WriteFunc __not_in_flash("writeFuncTable") * writeFuncTable;
 
 //------------------------------------------------------------------
 
@@ -158,6 +160,21 @@ void trs_step(void)
     z80_run();
   }  
 }
+
+void trs_cycles(unsigned int tstates)
+{
+  if (!pauzed) {
+    if (reset) {
+        z80_reset(resetAddr);
+        //memset(&z80ctx, 0, sizeof(Z80Context));
+        //Z80RESET(&z80ctx);
+        //z80ctx.PC = resetAddr;
+        reset = false;
+    }
+    Z80ExecuteTStates(&z80ctx, tstates);
+  }  
+}
+
 
 void trs_go(void)
 {
@@ -634,6 +651,17 @@ static const TRSKey trsKeys[] = {
 };
 
 uint8_t keyb_buffer[8] = {0};
+
+void __not_in_flash("trs_kb_reset") trs_kb_reset(void) {
+   keyb_buffer[0] = 0;
+   keyb_buffer[1] = 0;
+   keyb_buffer[2] = 0;
+   keyb_buffer[3] = 0;
+   keyb_buffer[4] = 0;
+   keyb_buffer[5] = 0;
+   keyb_buffer[6] = 0;
+   keyb_buffer[7] = 0;   
+}
 
 int __not_in_flash("trs_kb_mem_read") trs_kb_mem_read(int address) {
   if (address & 0x80) return keyb_buffer[7];

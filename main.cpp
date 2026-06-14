@@ -8,7 +8,10 @@
 
 int main(void) {
 //    vreg_set_voltage(VREG_VOLTAGE_1_05);
+//    vreg_set_voltage(VREG_VOLTAGE_1_20);
+//    set_sys_clock_khz(250000, true);
     set_sys_clock_khz(280000, true);
+//    set_sys_clock_khz(270000, true);
 //    set_sys_clock_khz(300000, true);
     *((uint32_t *)(0x40010000+0x58)) = 2 << 16; //CLK_HSTX_DIV = 2 << 16; // HSTX clock/2
 

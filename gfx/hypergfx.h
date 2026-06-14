@@ -3,7 +3,7 @@
 
 #include "stdint.h"
 
-//#define NO_HYPER   1
+#define NO_HYPER   1
 
 #ifdef PET
 extern bool font_lowercase;
@@ -15,6 +15,9 @@ extern bool font_reversed;
 #define VMODE_HIRES    0
 #define VMODE_LORES    1
 #define VMODE_GAMERES  2
+
+extern bool hyper_enabled;
+
 
 extern void HyperGfxInit(void);
 extern void HyperGfxFlashFSInit(void);

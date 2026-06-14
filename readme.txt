@@ -1,6 +1,6 @@
 
 # Install PICO-SDK (or update it)
-Use pico-sdk 2.2.0 (for RP2350, pico2)
+Use pico-sdk 2.2.0 (for RP2350, pico2/pico2w)
 ------------------------------------
 git clone -b master https://github.com/raspberrypi/pico-sdk.git
 cd pico-sdk/
@@ -33,8 +33,11 @@ Avoid brew executables on OSX as you only get latest version which seems problem
 Go to project dir:
 mkdir build
 cd build
-pico2/2w: 
+pico2 (no network):
 cmake -DPICO_PLATFORM=rp2350 -DPICO_BOARD=pico2 ..
+pico2w (network): 
+cmake -DPICO_PLATFORM=rp2350 -DPICO_BOARD=pico2_w ..
+
 make
 
 

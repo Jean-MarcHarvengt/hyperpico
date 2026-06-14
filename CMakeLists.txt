@@ -26,6 +26,7 @@ include_directories(decomp)
 include_directories(resid)
 include_directories(usb_serial)
 include_directories(usb_kbd)
+include_directories(network)
 if( ${TARGET} MATCHES "hypertrspico" )
 include_directories(trs80)
 endif()
@@ -71,6 +72,11 @@ set(USBKBD_SOURCES
 		usb_kbd/hid_app.c
 	)
 
+set(NETWORK_SOURCES
+		network/network.cpp
+		network/dhcpserver.c		
+	)
+
 
 if( ${TARGET} MATCHES "hyperpetpico" )
 set(MAIN_SOURCES
@@ -101,7 +107,8 @@ add_executable(${TARGET}
 		${SID_SOURCES}		
 		${FF_SOURCES}
 		${USBSERIAL_SOURCES}
-		${USBKBD_SOURCES}		
+		${USBKBD_SOURCES}
+#		${NETWORK_SOURCES}
 	)
 
 
@@ -116,6 +123,8 @@ target_link_libraries(${TARGET} pico_multicore
         tinyusb_host 
         tinyusb_board
 		tinyusb_pico_pio_usb
+#        pico_lwip_tftp		
+#        pico_cyw43_arch_lwip_threadsafe_background
 	)
 
 
@@ -141,6 +150,8 @@ if( ${TARGET} MATCHES "hyperpetpico" )
 target_compile_options(${TARGET} PUBLIC -DPET)
 endif()
 
+
+#add_compile_definitions(PICO_FLASH_SPI_CLKDIV=4)
 
 target_compile_definitions(${TARGET} PRIVATE PICO_CLOCK_AJDUST_PERI_CLOCK_WITH_SYS_CLOCK=1)
 

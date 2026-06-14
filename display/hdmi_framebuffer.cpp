@@ -129,13 +129,19 @@ static hdmi_framebuffer_obj_t *active_picodvi = NULL;
         DMA_CH0_CTRL_TRIG_EN_BITS | DMA_SIZE_8 << DMA_CH0_CTRL_TRIG_DATA_SIZE_LSB)
 
 
+static bool first_time = true;
 static void set_hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint16_t height) {
     bool half_width = (width == 320);
 
     irq_set_enabled(DMA_IRQ_0, false);
     dma_channel_abort(VGA_DMA_CHANNEL);
     dma_channel_abort(VGA_DMA_CHANNEL+1);
-    sleep_ms(30);
+    if (first_time) {
+        first_time = false;
+    }
+    else {
+        sleep_ms(30);
+    }
     memset((void*)&framebuffer[0],0, MAX_FB_WIDTH*MAX_FB_HEIGHT);
 
     self->width = width;
@@ -314,7 +320,8 @@ static void hdmi_framebuffer(hdmi_framebuffer_obj_t *self, uint16_t width, uint1
     dma_hw->ints0 = (1u << self->dma_pixel_channel);
     dma_hw->inte0 = (1u << self->dma_pixel_channel);
     irq_set_exclusive_handler(DMA_IRQ_0, dma_irq_handler);
-    irq_set_priority (DMA_IRQ_0, 0);    
+//    irq_set_priority (DMA_IRQ_0, 0);
+    irq_set_priority (DMA_IRQ_0, PICO_DEFAULT_IRQ_PRIORITY);
     irq_set_enabled(DMA_IRQ_0, true);
 
     dma_irq_handler();
@@ -385,10 +392,11 @@ void __not_in_flash("hdmi_wait_line") hdmi_wait_line(int line)
 #ifdef HAS_SND
 
 static void (*fillsamples)(audio_sample * stream, int len) = nullptr;
-static audio_sample * snd_buffer;       // samples buffer (1 malloc for 2 buffers)
-static uint16_t snd_nb_samples;         // total nb samples (mono) later divided by 2
-static uint16_t snd_sample_ptr = 0;     // sample index
-static audio_sample * audio_buffers[2]; // pointers to 2 samples buffers 
+//static audio_sample * snd_buffer = nullptr;     // samples buffer (1 malloc for 2 buffers)
+static audio_sample snd_buffer[1024];     // samples buffer (1 malloc for 2 buffers)
+static uint16_t snd_nb_samples;                 // total nb samples (mono) later divided by 2
+static uint16_t snd_sample_ptr = 0;             // sample index
+static audio_sample * audio_buffers[2];         // pointers to 2 samples buffers 
 static volatile int cur_audio_buffer;
 static volatile int last_audio_buffer;
 static int pwm_dma_chan;
@@ -417,7 +425,7 @@ static void __isr __time_critical_func(AUDIO_isr)()
 
 static void pwm_audio_reset(void)
 {
-  memset((void*)snd_buffer,0, snd_nb_samples*sizeof(uint8_t));
+  memset((void*)snd_buffer,128, 2*snd_nb_samples*sizeof(audio_sample));
 }
 
 /********************************
@@ -428,12 +436,14 @@ static void pwm_audio_init(int buffersize, void (*callback)(audio_sample * strea
   fillsamples = callback;
   snd_nb_samples = buffersize;
   snd_sample_ptr = 0;
-  snd_buffer =  (audio_sample*)malloc(snd_nb_samples*sizeof(audio_sample));
-  if (snd_buffer == NULL) {
-    printf("sound buffer could not be allocated!!!!!\n");
-    return;  
-  }
-  memset((void*)snd_buffer,128, snd_nb_samples*sizeof(audio_sample));
+  //if (snd_buffer == nullptr) {
+  //  snd_buffer =  (audio_sample*)malloc(buffersize*sizeof(audio_sample));
+  //  if (snd_buffer == NULL) {
+  //    //printf("sound buffer could not be allocated!!!!!\n");
+  //    return;  
+  //  }
+  //}
+  memset((void*)snd_buffer,128, buffersize*sizeof(audio_sample));
 
   gpio_set_function(AUDIO_PIN, GPIO_FUNC_PWM);
 
@@ -446,7 +456,7 @@ static void pwm_audio_init(int buffersize, void (*callback)(audio_sample * strea
   pwm_config_set_wrap(&config, 254);
   pwm_init(audio_pin_slice, &config, true);
 
-  snd_nb_samples = snd_nb_samples/2;
+  snd_nb_samples = buffersize/2;
   audio_buffers[0] = &snd_buffer[0];
   audio_buffers[1] = &snd_buffer[snd_nb_samples];
 
@@ -476,8 +486,8 @@ static void pwm_audio_init(int buffersize, void (*callback)(audio_sample * strea
   // whole audio buffer
   dma_channel_set_irq1_enabled(pwm_dma_chan, true);
   irq_set_exclusive_handler(DMA_IRQ_1, AUDIO_isr);
-  //irq_set_priority (DMA_IRQ_1, PICO_DEFAULT_IRQ_PRIORITY-8);
   irq_set_enabled(DMA_IRQ_1, true);
+  irq_set_priority (DMA_IRQ_1, PICO_DEFAULT_IRQ_PRIORITY+64);
   dma_channel_start(pwm_dma_chan);
 }
 

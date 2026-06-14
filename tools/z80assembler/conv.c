@@ -97,7 +97,7 @@ int main(int argc, char *argv[]) {
   if (processFile("pet_a000_roms/wordpro3-rom-a000.bin","wordpro3-rom-a000.h","wordpro3") < 0)
     return (-1);
 */
-  if (processFile("fb.bin","fb.h","fb") < 0)
+  if (processFile("diag.bin","diag.h","diag") < 0)
     return (-1);
 
 /*

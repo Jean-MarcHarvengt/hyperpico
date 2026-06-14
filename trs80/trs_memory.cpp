@@ -278,14 +278,12 @@ const unsigned char test3_rom[] = {
 //0080                          .ORG   128   
 //0080                SCR:      
 
+#include "tools/z80assembler/diag.h"
 
 
 void mem_init()
 {
     /* Initialize RAM, ROM & Video memory */
-    memset(memory, 0, MEM_SIZE);
-    //memset(video, 0, sizeof(video));
-
 #ifdef SUPERMEM
     /* We map the SuperMem separately, otherwise it can get really
        confusing when combining with other stuff */
@@ -321,6 +319,10 @@ void mem_init()
 	  case ROM_TEST3:
 	    rom = (Uchar*)test3_rom;
 	    trs_rom_size = sizeof(test3_rom);
+	    break;
+	  case ROM_DIAG:
+	    rom = (Uchar*)diag;
+	    trs_rom_size = sizeof(diag);
 	    break;
   	}
   	memcpy((void*)memory, (void*)rom, trs_rom_size);
@@ -501,8 +503,9 @@ void mem_write(unsigned int address, int value)
     }    
 #else
     /* Model III */
-	if (address >= 0xe800) memory[address] = value;
-	else if (address >= 0xe000) return;    	
+	//if (address >= 0xe800) memory[address] = value;
+	//else if (address >= 0xe000) return;
+	if (address >= 0xfd00) return;    	
 	else if (address >= RAM_START) {	
     	memory[address] = value;
 	} 

@@ -55,6 +55,7 @@ lfill
 newirq
 
         jsr    playmusic
+        jsr   dumpsid
         jmp ($033d)
 
 
@@ -150,6 +151,7 @@ moff =*
 contplay =*
 
   ldx #3-1         ;number of chanels
+  ldx #2-1         ;number of chanels
 
   dec speed        ;check the speed
   bpl mainloop
@@ -326,7 +328,6 @@ appendnote =*
   lda tempctrl
   sta voicectrl,x
 
-
 ;4th byte checks for the end of pattern
 ;if eop found, inc the position and
 ;reset patoffset for new pattern
@@ -379,7 +380,6 @@ soundwork =*
 ;(does alot of work)
 
 vibrato =*
-
   lda instrnr,x    ;instr num
   asl
   asl
@@ -675,7 +675,39 @@ musicend =*
 
   rts
 
+dumpsid:
+  ldx #$00  
+  ldy #$00
+dump0:  
+  txa
+  pha
+  lda REG_SIDBASE,x
+  lsr
+  lsr
+  lsr
+  lsr
+  tax
+  lda hex,x
+  sta $8000,y
+  iny
+  
+  pla
+  tax
+  txa
+  pha
 
+  lda REG_SIDBASE,x
+  and #$0f
+  tax
+  lda hex,x
+  sta $8000,y
+  iny
+  pla
+  tax
+  inx
+  cpx #32
+  bne dump0
+  rts
 
 
 ;====================================
@@ -1464,3 +1496,8 @@ instr =*
  !byte $00,$00,$11,$0a,$fa,$00,$00,$05
  !byte $00,$08,$41,$37,$40,$02,$00,$00
  !byte $00,$08,$11,$07,$70,$02,$00,$00
+
+
+hex:
+  !byte '0','1','2','3','4','5','6','7','8','9'
+  !byte 'A','B','C','D','E','F' 

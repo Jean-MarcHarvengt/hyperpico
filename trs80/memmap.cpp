@@ -12,8 +12,9 @@ extern "C" {
   #include "iopins.h"   
 }
 
-#if (defined(CPU_EMU) || defined(CPU_Z80))
 #include "tools/z80assembler/fb.h"
+
+#if (defined(CPU_EMU) || defined(CPU_Z80))
 
 #ifdef HAS_USBHOST
 #include "bsp/board_api.h"
@@ -25,18 +26,30 @@ extern "C" void hid_app_task(void);
 #endif
 #endif
 
+#ifdef HAS_NETWORK
+#include "network.h"
+#include "lwip/apps/tftp_server.h"
+#endif
 
 #ifdef CPU_Z80
 #include "clock.pio.h"
 #endif
 #include "busreadwrite.pio.h"
 
+#ifdef CPU_EMU
+#include "hdmi_framebuffer.h"
+#endif
+
 #include "hypergfx.h"
 
 #include "trs_memory.h"
 #include "trs_screen.h"
 
-#define PIO_DIV 1.0f
+#ifdef TRS_EXPANSION
+#define PIO_DIV 2.0f // 2MHz for expansion (pio slower)
+#else
+#define PIO_DIV 1.0f // 4MHz
+#endif
 
 static PIO bus_pio;
 static uint bus_smr;
@@ -48,9 +61,9 @@ static uint clock_sm;
 #endif
 
 #define ADDBUS_WIDTH 16
-#define ADDBUS_MASK  (MEM_SIZE-1) 
+#define ADDBUS_MASK  (MEMORY_SIZE-1) 
 
-uint8_t memory[MEM_SIZE];
+uint8_t memory[MEMORY_SIZE];
 static uint32_t armaddr = ((uint32_t)memory);
 
 static bool got_reset=false;
@@ -152,12 +165,10 @@ static void __not_in_flash("readNone") readNone(uint16_t address) {
 
 #ifdef CPU_EMU  
 static uint8_t __not_in_flash("readMEM") readMEM(uint16_t address) {
-  if (address == 0) got_reset=true;
   return (memory[address]);
 #else
 static void __not_in_flash("readMEM") readMEM(uint16_t address) {
-  if (address == 0) got_reset=true;
-  bus_pio->txf[bus_smr] = 0x100 | memory[address];  
+  bus_pio->txf[bus_smr] = 0x100 | memory[address];
 #endif  
 }
 
@@ -165,17 +176,51 @@ static void __not_in_flash("readMEM") readMEM(uint16_t address) {
 #ifdef CPU_EMU  
 static uint8_t __not_in_flash("readVKMEM") readVKMEM(uint16_t address) {
   if (address >= VIDEO_START )
-    return (memory[address]);  
+    if (memory[address]<0x20)
+      return (memory[address] | 0x40);  
+    else
+      return (memory[address]);  
   else
     return trs_kb_mem_read(address);
 #else
 static void __not_in_flash("readVKMEM") readVKMEM(uint16_t address) {
   if (address >= VIDEO_START )
-    bus_pio->txf[bus_smr] = 0x100 | memory[address];  
+//#ifdef NO_LOWERCASEMOD    
+//    if (memory[address]<0x20)
+//      bus_pio->txf[bus_smr] = 0x140 | memory[address];  
+//    else
+//#endif
+      bus_pio->txf[bus_smr] = 0x100 | memory[address];  
+#ifdef CPU_Z80
   else
     bus_pio->txf[bus_smr] = 0x100 | trs_kb_mem_read(address);
+#else
+    bus_pio->txf[bus_smr] = 0;
+#endif
 #endif  
 }
+
+
+#ifdef CPU_EMU  
+static void __not_in_flash("writeVKMEM") writeVKMEM(uint16_t address, uint8_t value) {
+  if (address >= VIDEO_START )
+    memory[address]=value; 
+  else
+    memory[address]=value;
+#else
+static void __not_in_flash("writeVKMEM") writeVKMEM(uint16_t address, uint8_t value) {
+  if (address >= VIDEO_START )
+#ifdef NO_LOWERCASEMOD    
+    if (value<0x20)
+      memory[address]=value|0x40; 
+    else
+#endif    
+    memory[address]=value;
+  else
+    memory[address]=value;
+#endif  
+}
+
 
 static void __not_in_flash("writeNone") writeNone(uint16_t address, uint8_t value) {
 }
@@ -184,27 +229,34 @@ static void __not_in_flash("writeMEM") writeMEM(uint16_t address, uint8_t value)
   memory[address]=value;
 }
 
-static void __not_in_flash("writeMEMTOP") writeMEMTOP(uint16_t address, uint8_t value) {
-  if (address >= 0xe701) // top of memory, begining File Browser rom
+static void __not_in_flash("writeMEMTOPF800") writeMEMTOPF800(uint16_t address, uint8_t value) {
+  if (address < 0xfd00) // top of memory
     memory[address]=value;
 }
 
 
+typedef void (*WriteFunc)(uint16_t,uint8_t);
 #ifdef CPU_EMU  
-uint8_t __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
+typedef uint8_t (*ReadFunc)(uint16_t);
+ReadFunc __not_in_flash("readFuncTable") * readFuncTable;
+WriteFunc __not_in_flash("writeFuncTable") * writeFuncTable;
 #else
-void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
+typedef void (*ReadFunc)(uint16_t);
+static ReadFunc __not_in_flash("readFuncTable") * readFuncTable;
+static WriteFunc __not_in_flash("writeFuncTable") * writeFuncTable;
 #endif
+
+ReadFunc __not_in_flash("readFuncTable_hyper") readFuncTable_hyper[32]
 {
 #if (defined(CPU_EMU) || defined(CPU_Z80))
-  readMEM,   // 00
+  readMEM,   // 00      // 12K ROM
   readMEM,   // 08
   readMEM,   // 10
   readMEM,   // 18
   readMEM,   // 20
   readMEM,   // 28
-  readMEM,   // 30
-  readVKMEM, // 38
+  readMEM,   // 30      // unmapped (or printer/FDC)
+  readVKMEM, // 38      // keyboard + video RAM (from 0x3c00)
 #else
   readNone,  // 00
   readNone,  // 08
@@ -212,18 +264,18 @@ void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
   readNone,  // 18
   readNone,  // 20
   readNone,  // 28
-  readNone,  // 30  
-  readNone,  // 38
+  readNone,  // 30
+  readNone,  // 38 
 #endif
-#if (defined(TRS_4K) || defined(TRS_16K) || defined(TRS_48K))
-  readNone,  // 40
+#if (defined(TRS_4K) || defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))
+  readNone,  // 40      // first 4K RAM
   readNone,  // 48
 #else
   readMEM,   // 40
   readMEM,   // 48
 #endif
-#if (defined(TRS_16K) || defined(TRS_48K))
-  readNone,  // 50
+#if (defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))              
+  readNone,  // 50      // next 12K RAM
   readNone,  // 58
   readNone,  // 60
   readNone,  // 68
@@ -237,23 +289,15 @@ void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
   readMEM,   // 70
   readMEM,   // 78
 #endif
-#if (defined(TRS_48K))
-  readNone,   // 80
-  readNone,   // 88
-  readNone,   // 90
-  readNone,   // 98
-  readNone,   // a0
-  readNone,   // a8
-  readNone,   // b0
-  readNone,   // b8
-  readNone,   // c0
-  readNone,   // c8
-  readNone,   // d0
-  readNone,   // d8
-  readNone,   // e0
-  readNone,   // e8
-  readNone,   // f0
-  readNone,   // f8
+#if (defined(TRS_32K) || defined(TRS_48K))
+  readNone,  // 80      // next 16k RAM
+  readNone,  // 88
+  readNone,  // 90
+  readNone,  // 98
+  readNone,  // a0
+  readNone,  // a8
+  readNone,  // b0
+  readNone,  // b8
 #else
   readMEM,   // 80
   readMEM,   // 88
@@ -263,6 +307,174 @@ void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
   readMEM,   // a8
   readMEM,   // b0
   readMEM,   // b8
+#endif
+#if (defined(TRS_48K))
+  readNone,  // c0      // last 16K RAM
+  readNone,  // c8
+  readNone,  // d0
+  readNone,  // d8
+  readNone,  // e0
+  readNone,  // e8
+  readNone,  // f0
+  readNone   // f8
+#else
+  readMEM,   // c0      // last 16K RAM (includes HYPERGFX)
+  readMEM,   // c8
+  readMEM,   // d0
+  readMEM,   // d8
+  readMEM,   // e0
+  readMEM,   // e8
+  readMEM,   // f0
+  readMEM    // f8  
+#endif
+};
+
+WriteFunc __not_in_flash("writeFuncTable_hyper") writeFuncTable_hyper[32]
+{
+  writeNone, // 00      // 12K ROM
+  writeNone, // 08 
+  writeNone, // 10
+  writeNone, // 18
+  writeNone, // 20
+  writeNone, // 28
+  writeNone, // 30      // unmapped (or printer/FDC)
+  writeVKMEM,  // 38      // keyboard + video RAM (from 0x3c00)
+#if (defined(TRS_4K) || defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))
+  writeNone, // 40      // first 4K RAM
+  writeNone, // 48
+#else
+  writeMEM,  // 40
+  writeMEM,  // 48
+#endif
+#if (defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))
+  writeNone,  // 50     // next 12K RAM
+  writeNone,  // 58
+  writeNone,  // 60
+  writeNone,  // 68
+  writeNone,  // 70
+  writeNone,  // 78
+#else
+  writeMEM,   // 50
+  writeMEM,   // 58
+  writeMEM,   // 60
+  writeMEM,   // 68
+  writeMEM,   // 70
+  writeMEM,   // 78
+#endif
+#if (defined(TRS_32K) || defined(TRS_48K))
+  writeNone,  // 80     // next 16k RAM
+  writeNone,  // 88
+  writeNone,  // 90
+  writeNone,  // 98
+  writeNone,  // a0
+  writeNone,  // a8
+  writeNone,  // b0
+  writeNone,  // b8
+#else
+  writeMEM,   // 80 
+  writeMEM,   // 88
+  writeMEM,   // 90
+  writeMEM,   // 98
+  writeMEM,   // a0
+  writeMEM,   // a8
+  writeMEM,   // b0
+  writeMEM,   // b8
+#endif  
+#if (defined(TRS_48K))
+  writeNone,  // c0     // last 16K RAM 
+  writeNone,  // c8
+  writeNone,  // d0
+  writeNone,  // d8
+  writeNone,  // e0
+  writeNone,  // e8
+  writeNone,  // f0
+  writeNone,  // f8
+#else
+  writeMEM,   // c0     // last 16K RAM (includes HYPERGFX)
+  writeMEM,   // c8
+  writeMEM,   // d0
+  writeMEM,   // d8
+  writeMEM,   // e0
+  writeMEM,   // e8
+  writeMEM,   // f0
+  writeMEMTOPF800    // f8 // for initial memory test!
+#endif
+};
+
+
+
+ReadFunc __not_in_flash("readFuncTable_nohyper") readFuncTable_nohyper[32]
+{
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+  readMEM,   // 00      // 12K ROM
+  readMEM,   // 08
+  readMEM,   // 10
+  readMEM,   // 18
+  readMEM,   // 20
+  readMEM,   // 28
+  readMEM,   // 30     // unmapped (or printer/FDC)
+  readVKMEM, // 38     // keyboard + video RAM (from 0x3c00)
+#else
+  readNone,  // 00
+  readNone,  // 08
+  readNone,  // 10
+  readNone,  // 18
+  readNone,  // 20
+  readNone,  // 28
+  readNone,  // 30
+  readNone,  // 38  
+#endif
+#if (defined(TRS_4K) || defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))
+  readNone,  // 40      // first 4K RAM
+  readNone,  // 48
+#else
+  readMEM,   // 40
+  readMEM,   // 48
+#endif
+#if (defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))              
+  readNone,  // 50      // next 12K RAM
+  readNone,  // 58
+  readNone,  // 60
+  readNone,  // 68
+  readNone,  // 70
+  readNone,  // 78
+#else
+  readMEM,   // 50
+  readMEM,   // 58
+  readMEM,   // 60
+  readMEM,   // 68
+  readMEM,   // 70
+  readMEM,   // 78
+#endif
+#if (defined(TRS_32K) || defined(TRS_48K))
+  readNone,  // 80      // next 16k RAM
+  readNone,  // 88
+  readNone,  // 90
+  readNone,  // 98
+  readNone,  // a0
+  readNone,  // a8
+  readNone,  // b0
+  readNone,  // b8
+#else
+  readMEM,   // 80
+  readMEM,   // 88
+  readMEM,   // 90
+  readMEM,   // 98
+  readMEM,   // a0
+  readMEM,   // a8
+  readMEM,   // b0
+  readMEM,   // b8
+#endif
+#if (defined(TRS_48K))
+  readNone,  // c0      // last 16K RAM
+  readNone,  // c8
+  readNone,  // d0
+  readNone,  // d8
+  readNone,  // e0
+  readNone,  // e8
+  readNone,  // f0
+  readNone   // f8
+#else
   readMEM,   // c0
   readMEM,   // c8
   readMEM,   // d0
@@ -270,45 +482,90 @@ void __not_in_flash("readFuncTable") (*readFuncTable[32])(uint16_t)
   readMEM,   // e0
   readMEM,   // e8
   readMEM,   // f0
-  readMEM,   // f8
-#endif
+  readMEM    // f8
+#endif  
 };
 
-void __not_in_flash("writeFuncTable") (*writeFuncTable[32])(uint16_t,uint8_t)
+
+WriteFunc __not_in_flash("writeFuncTable_hyper") writeFuncTable_nohyper[32]
 {
-  writeNone, // 00
-  writeNone, // 08
+  writeNone, // 00      // 12K ROM
+  writeNone, // 08 
   writeNone, // 10
   writeNone, // 18
   writeNone, // 20
   writeNone, // 28
-  writeNone, // 30
-  writeMEM,  // 38 // keyboard + video
+  writeNone, // 30      // unmapped (or printer/FDC)
+  writeVKMEM,  // 38      // keyboard + video RAM (from 0x3c00)
+#if (defined(TRS_4K) || defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))
+  writeNone, // 40      // first 4K RAM
+  writeNone, // 48
+#else
   writeMEM,  // 40
   writeMEM,  // 48
-  writeMEM,  // 50
-  writeMEM,  // 58
-  writeMEM,  // 60
-  writeMEM,  // 68
-  writeMEM,  // 70
-  writeMEM,  // 78
-  writeMEM,  // 80
-  writeMEM,  // 88
-  writeMEM,  // 90
-  writeMEM,  // 98
-  writeMEM,  // a0
-  writeMEM,  // a8
-  writeMEM,  // b0
-  writeMEM,  // b8
-  writeMEM,  // c0
-  writeMEM,  // c8
-  writeMEM,  // d0
-  writeMEM,  // d8
-  writeMEMTOP,    // e0
-  HyperGfxWrite,  // e8
-  HyperGfxWrite,  // f0
-  HyperGfxWrite,  // f8
+#endif
+#if (defined(TRS_16K) || defined(TRS_32K) || defined(TRS_48K))
+  writeNone,  // 50     // next 12K RAM
+  writeNone,  // 58
+  writeNone,  // 60
+  writeNone,  // 68
+  writeNone,  // 70
+  writeNone,  // 78
+#else
+  writeMEM,   // 50
+  writeMEM,   // 58
+  writeMEM,   // 60
+  writeMEM,   // 68
+  writeMEM,   // 70
+  writeMEM,   // 78
+#endif
+#if (defined(TRS_32K) || defined(TRS_48K))
+  writeNone,  // 80     // next 16k RAM
+  writeNone,  // 88
+  writeNone,  // 90
+  writeNone,  // 98
+  writeNone,  // a0
+  writeNone,  // a8
+  writeNone,  // b0
+  writeNone,  // b8
+#else
+  writeMEM,   // 80 
+  writeMEM,   // 88
+  writeMEM,   // 90
+  writeMEM,   // 98
+  writeMEM,   // a0
+  writeMEM,   // a8
+  writeMEM,   // b0
+  writeMEM,   // b8
+#endif  
+#if (defined(TRS_48K))
+  writeNone,  // c0   // last 16K RAM
+  writeNone,  // c8
+  writeNone,  // d0
+  writeNone,  // d8
+  writeNone,  // e0
+  writeNone,  // e8
+  writeNone,  // f0
+  writeNone   // f8
+#else
+  writeMEM,   // c0   // last 16K RAM
+  writeMEM,   // c8
+  writeMEM,   // d0
+  writeMEM,   // d8
+  writeMEM,   // e0
+  writeMEM,   // e8
+  writeMEM,   // f0
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+  writeMEMTOPF800  // f8
+#else
+  writeMEM    // f8
+#endif
+#endif
 };
+
+
+
+
 
 
 static void __not_in_flash("blink") blink(void)
@@ -342,15 +599,20 @@ void __not_in_flash("__time_critical_func") pioirq_smr(void) {
       else
         bus_pio->txf[bus_smr] = 0xff;
       */
-      
-#if (defined(CPU_EMU) || defined(CPU_Z80))
+#ifndef IGNORE_IOMEM      
+#ifdef TRS_EXPANSION
+      if (gpio_get(CONFIG_PIN_BUS_IOIN) )
+#else         
       if (gpio_get(CONFIG_PIN_BUS_IOREQ) )
 #endif
+#endif        
         readFuncTable[add>>11](add);
-#if (defined(CPU_EMU) || defined(CPU_Z80))
+//#if (defined(CPU_EMU) || defined(CPU_Z80))
+#ifndef IGNORE_IOMEM      
       else
         bus_pio->txf[bus_smr] = 0xff;
 #endif
+//#endif
       
 #ifdef BUS_DEBUG                        
       addr[memptr++] = add & 0xff;           
@@ -364,11 +626,14 @@ void __not_in_flash("__time_critical_func") pioirq_smw(void) {
   if(!pio_sm_is_rx_fifo_empty(bus_pio, bus_smw)) {
       uint32_t value = pio_sm_get(bus_pio, bus_smw);
       uint16_t add = (value >> 8);
-      
       //if (add >= MAX_ROM_SIZE) memory[add]=value & 0xff;
       
-#ifdef CPU_Z80
+#ifndef IGNORE_IOMEM      
+#ifdef TRS_EXPANSION
+      if (gpio_get(CONFIG_PIN_BUS_IOOUT) )
+#else         
       if (gpio_get(CONFIG_PIN_BUS_IOREQ) )
+#endif
 #endif
         writeFuncTable[add>>11](add,value & 0xff);            
       
@@ -470,15 +735,19 @@ static void run_pio(void) {
     gpio_set_pulls(CONFIG_PIN_BUS_RD, false, false);
     pio_gpio_init(bus_pio, CONFIG_PIN_BUS_WR);
     gpio_set_pulls(CONFIG_PIN_BUS_WR, false, false);
-#ifdef CPU_Z80   
-    //pio_gpio_init(bus_pio, CONFIG_PIN_BUS_IOREQ);
-    //gpio_set_pulls(CONFIG_PIN_BUS_IOREQ, false, false);
+#ifdef TRS_EXPANSION   
+    gpio_init(CONFIG_PIN_BUS_IOIN);
+    gpio_set_dir(CONFIG_PIN_BUS_IOIN, GPIO_IN);
+    gpio_set_pulls(CONFIG_PIN_BUS_IOIN, false, false);
+    gpio_init(CONFIG_PIN_BUS_IOOUT);
+    gpio_set_dir(CONFIG_PIN_BUS_IOOUT, GPIO_IN);
+    gpio_set_pulls(CONFIG_PIN_BUS_IOOUT, false, false);    
+#else
     gpio_init(CONFIG_PIN_BUS_IOREQ);
     gpio_set_dir(CONFIG_PIN_BUS_IOREQ, GPIO_IN);
     gpio_set_pulls(CONFIG_PIN_BUS_IOREQ, false, false);
 #endif   
     pio_sm_set_clkdiv(bus_pio, bus_smr, PIO_DIV);
-
 
     // Set pio IRQs to tell us when the RX FIFO is NOT empty
     pio_set_irq0_source_mask_enabled(bus_pio,(1u << pio_get_rx_fifo_not_empty_interrupt_source(bus_smr)), true);
@@ -496,6 +765,10 @@ static void run_pio(void) {
     irq_set_exclusive_handler ((bus_pio == pio0) ? PIO0_IRQ_1 : PIO1_IRQ_1, pioirq_smw );
 #endif
     irq_set_enabled((bus_pio == pio0) ? PIO0_IRQ_1 : PIO1_IRQ_1, true); // Enable the IRQ
+
+    irq_set_priority ((bus_pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0, PICO_DEFAULT_IRQ_PRIORITY-64);
+    irq_set_priority ((bus_pio == pio0) ? PIO0_IRQ_1 : PIO1_IRQ_1, PICO_DEFAULT_IRQ_PRIORITY-64);
+
 
 /*
     irq_set_enabled(TIMER1_IRQ_0, false);
@@ -539,43 +812,37 @@ static void run_pio(void) {
     pio_enable_sm_mask_in_sync(bus_pio, (1 << bus_smr) | (1 << bus_smw));
     pio_sm_set_enabled(clock_pio, clock_sm, true);
 #else
-    gpio_init(TRS_RESET);
-    gpio_set_dir(TRS_RESET, GPIO_IN);
-    gpio_set_pulls(TRS_RESET, false, false);
-    gpio_init(CONFIG_PIN_BUS_IOOUT);
-    gpio_set_dir(CONFIG_PIN_BUS_IOOUT, GPIO_IN);
-    gpio_set_pulls(CONFIG_PIN_BUS_IOOUT, false, false);
-    gpio_init(CONFIG_PIN_BUS_IOIN);
-    gpio_set_dir(CONFIG_PIN_BUS_IOIN, GPIO_IN);
-    gpio_set_pulls(CONFIG_PIN_BUS_IOIN, false, false);
     pio_enable_sm_mask_in_sync(bus_pio, (1 << bus_smr) | (1 << bus_smw));
 #endif
 }
 
 
-#if (defined(CPU_EMU) || defined(CPU_Z80))
+
 
 // ****************************************
-// Keyboard
+// Timer
 // ****************************************
 #define KEY_DEBOUNCE_MS 50
 #define BOOT_SEQ_MS 700
 
-static int prev_key = 0;
 static int repeat_cnt = 0;
 static bool send_cmdstring = false;
 static char * cmdstring_pt;
-static char trsinitcmd[] = {0x01, 0x0d, 0x01, 0x01, 0x0d, 1, 1, 2, 'x','=','u','s','r','(','0',')',0x0d, 0};
+static char trsinitcmd[] = {0x01, 0x0d, 0x01, 0x01, 0x0d, 1, 1, 1, 1, 2, 'x','=','u','s','r','(','0',')',0x0d, 0};
 static char trsruncmd[] = {'x','=','u','s','r','(','0',')',0x0d, 0};
+static char trscopy[] = {1, 2,0}; // copy FB after 10 sec
+
+
+static int prev_key = 0;
+
 
 // system (not working)
 // /57345 or -8191
 //
-// poke (working)
-//POKE 16526,1
-//POKE 16527,224
+//Start File Browser (working)
+//POKE 16526,0
+//POKE 16527,235
 //a=usr(0)
-
 
 
 static bool repeating_timer_callback(struct repeating_timer *t) {
@@ -592,15 +859,25 @@ static bool repeating_timer_callback(struct repeating_timer *t) {
             repeat_cnt = BOOT_SEQ_MS; 
             prev_key = 0;
           } 
-          else
-          if (asciikey == 2) {
-            memcpy((void*)&memory[fb[1]*256+fb[0]],(void*)&fb[2], sizeof(fb)-2);
-            memory[16526] = fb[0];
-            memory[16527] = fb[1];
-            prev_key = 0;
+          else if (asciikey == 2) {
+            if (hyper_enabled) {
+              memcpy((void*)&memory[fb[1]*256+fb[0]],(void*)&fb[2], sizeof(fb)-2);
+              memory[16526] = fb[0];
+              memory[16527] = fb[1];
+              memory[0x3c00] = 'F';
+              memory[0x3c01] = 'B';
+              memory[0x3c02] = ' ';
+              memory[0x3c03] = 'L';
+              memory[0x3c04] = 'O';
+              memory[0x3c05] = 'A';
+              memory[0x3c06] = 'D';
+              memory[0x3c07] = 'E';
+              memory[0x3c08] = 'D';
+              writeFuncTable_hyper[31]=HyperGfxWrite;
+              prev_key = 0;              
+            }
           } 
-          else
-          if (asciikey) if ( trs_process_asciikey(asciikey, true) ) {
+          else if (asciikey) if ( trs_process_asciikey(asciikey, true) ) {
             prev_key = asciikey;
             repeat_cnt = KEY_DEBOUNCE_MS; 
           }
@@ -613,6 +890,7 @@ static bool repeating_timer_callback(struct repeating_timer *t) {
     return true;
 }
 
+#if (defined(CPU_EMU) || defined(CPU_Z80))
 
 #ifdef HAS_USBHOST
 // ****************************************
@@ -727,13 +1005,17 @@ static int __not_in_flash_func(serial_rx)(uint8_t* buf, int len) {
     
     switch (buf[0]) {
       case sercmd_reset:
-        trs_play(0);
+#ifdef CPU_EMU
+        got_reset = true;
+#endif        
         break;
       case sercmd_key:        
         asciikey = buf[1]&0x7f;
-        if (asciikey) if ( trs_process_asciikey(asciikey, true) ) {
-          prev_key = asciikey;
-          repeat_cnt = KEY_DEBOUNCE_MS; 
+        if (send_cmdstring == false) {
+          if (asciikey) if ( trs_process_asciikey(asciikey, true) ) {        
+            prev_key = asciikey;
+            repeat_cnt = KEY_DEBOUNCE_MS; 
+          }          
         }
         break;
       case sercmd_prg:
@@ -771,6 +1053,106 @@ static int __not_in_flash_func(serial_rx)(uint8_t* buf, int len) {
 
 #endif
 
+/********************************
+ * Network
+********************************/ 
+#ifdef HAS_NETWORK
+static int tftp_handle;
+
+static void* tftp_open(const char* fname, const char* mode, u8_t is_write)
+{
+  printf("TFTP open: %s\n", fname);
+  memory[0x3c00] = 'A';
+  LWIP_UNUSED_ARG(mode);
+
+
+  return (void*)&tftp_handle;
+}
+
+static void tftp_close(void* handle)
+{
+  memory[0x3c01] = 'B';
+  printf("TFTP close\n");
+}
+
+static int tftp_read(void* handle, void* buf, int bytes)
+{
+  return 0;
+}
+
+static int tftp_write(void* handle, struct pbuf* p)
+{
+
+    memory[0x3c02] = 'C';
+    while (p != NULL) {
+      printf("TFTP write %d\n",p->len);
+      //pet_prg_write((uint8_t *)p->payload,p->len);  
+      p = p->next;
+    }
+
+  return 0;
+}
+
+/* For TFTP client only */
+static void tftp_error(void* handle, int err, const char* msg, int size)
+{
+//  char message[100];
+
+  LWIP_UNUSED_ARG(handle);
+
+//  memset(message, 0, sizeof(message));
+//  MEMCPY(message, msg, LWIP_MIN(sizeof(message)-1, (size_t)size));
+
+//  printf("TFTP error: %d (%s)", err, message);
+}
+
+static const struct tftp_context tftp_ctx = {
+  tftp_open,
+  tftp_close,
+  tftp_read,
+  tftp_write,
+  tftp_error
+};
+#endif
+
+/********************************
+ * Check for reset
+********************************/ 
+#define RESET_TRESHOLD 15000
+static uint32_t reset_counter = 0;
+static bool last_reset_state = false;
+
+static bool __not_in_flash("poll_reset") poll_reset(void)
+{  
+  bool retval = false;
+  // low is reset => true
+  bool reset_state = !(gpio_get(TRS_RESET));
+  if (reset_state) {
+    if (!last_reset_state) {
+      if (reset_counter < RESET_TRESHOLD) {
+        reset_counter++;
+#if (defined(CPU_EMU) || defined(CPU_Z80))
+#else
+        if (hyper_enabled) {
+          repeat_cnt = 0;
+          cmdstring_pt = &trscopy[0];
+          send_cmdstring = true;
+          writeFuncTable_hyper[31]=writeMEMTOPF800;
+        }      
+#endif
+        retval = true;
+      }
+    }
+  }
+  else {
+    reset_counter = 0;
+  }
+  last_reset_state = reset_state;
+  return retval;
+}
+
+#define LINE_CYCLES ((CLOCK_MHZ_M3*1000000)/(60*200)) // 2MHz, 260 lines
+#define BLANK_CYCLES (LINE_CYCLES*60)
 
 static void __not_in_flash("pio_core") pio_core(void)
 {
@@ -779,18 +1161,28 @@ static void __not_in_flash("pio_core") pio_core(void)
 #endif
   while(true) { 
 #ifdef CPU_EMU
-    trs_step();
+    for (int i = 8; i < 408; i = i + 2) {
+        hdmi_wait_line(i);
+        trs_cycles(LINE_CYCLES);
+    }
+    trs_cycles(BLANK_CYCLES);
+    //trs_step();
 #endif
     if (got_reset) {
         got_reset = false;
+#ifdef CPU_EMU
+        trs_play(0);
+#endif
         HyperGfxReset();
 #if (defined(CPU_EMU) || defined(CPU_Z80))
-#ifndef NO_HYPER        
+        trs_kb_reset();
         prev_key = 0;
-        cmdstring_pt = &trsinitcmd[0];
-        send_cmdstring = true;
-        repeat_cnt = 0; 
-#endif
+        repeat_cnt = 0;
+        if (hyper_enabled) {
+          writeFuncTable_hyper[31]=writeMEMTOPF800;
+          cmdstring_pt = &trsinitcmd[0];
+          send_cmdstring = true;
+        }
 #endif
     }
     //HdmiHandleAudio(); 
@@ -799,8 +1191,46 @@ static void __not_in_flash("pio_core") pio_core(void)
 }
 
 void start_system(void) 
-{
+{  
+  mem_init();
+
+#ifdef CPU_Z80
+    hyper_enabled = true;
+#else
+  gpio_init(HYPERGFX_ENA_INPUT);
+  gpio_set_dir(HYPERGFX_ENA_INPUT, GPIO_IN);
+  gpio_set_pulls(HYPERGFX_ENA_INPUT, true, false);
+  sleep_us(50);  
+  if ( !gpio_get(HYPERGFX_ENA_INPUT) ) {
+    hyper_enabled = true;
+  }
+#endif
+
+  if (hyper_enabled) {
+    readFuncTable=readFuncTable_hyper;
+    writeFuncTable=writeFuncTable_hyper;
+  }
+  else {    
+    readFuncTable=readFuncTable_nohyper;
+    writeFuncTable=writeFuncTable_nohyper;
+  }
+
+#ifdef HAS_NETWORK 
+  uint32_t ip = wifi_init();
+  if (ip)
+  {
+    tftp_init_common(LWIP_TFTP_MODE_SERVER, &tftp_ctx);
+    while (true) {
+        __dmb();    
+    }
+
+  }
+#endif
+
+
 #if (defined(CPU_EMU) || defined(CPU_Z80))
+  struct repeating_timer timer;
+  add_repeating_timer_ms(-1, repeating_timer_callback, NULL, &timer); 
 #ifdef HAS_USBHOST
     //board_init();
     // init host stack on configured roothub port
@@ -808,40 +1238,53 @@ void start_system(void)
 #else
     usb_serial_init(&serial_rx);
 #endif
-  struct repeating_timer timer;
-  add_repeating_timer_ms(-1, repeating_timer_callback, NULL, &timer); 
-#ifndef NO_HYPER
-  cmdstring_pt = &trsinitcmd[0];
-  send_cmdstring = true;
-  repeat_cnt = 0;
-#endif   
+  prev_key = 0;
+  if (hyper_enabled) {
+    repeat_cnt = 0;
+    cmdstring_pt = &trsinitcmd[0];
+    send_cmdstring = true;
+  }   
+#else
+  if (hyper_enabled) {
+    repeat_cnt = 0;
+    cmdstring_pt = &trscopy[0];
+    send_cmdstring = true;
+    writeFuncTable_hyper[31]=writeMEMTOPF800;
+  }
 #endif
 
-  HyperGfxFlashFSInit();  
-  //trs_screen_setMode(MODE_TEXT_80x24);
-  trs_screen_setMode(MODE_TEXT_64x16);
-#if (defined(CPU_EMU) || defined(CPU_Z80))  
-  mem_init();
-#endif  
-
-  HyperGfxInit();
 
 #ifdef CPU_EMU
   trs_init();
   multicore_launch_core1(pio_core);
 #else
   multicore_launch_core1(pio_core);
-
 #ifdef BUS_DEBUG
   memptr = 0;
   memptw = 0;
 #endif
 #ifdef CPU_Z80
+  // release RESET if pico controls Z80!
   sleep_ms(500);
   gpio_put(TRS_RESET, 1);
+  sleep_us(50);
+//  gpio_set_dir(TRS_RESET, GPIO_IN);
+//  gpio_set_pulls(TRS_RESET, true, false);
+#endif
 #endif
 
+  // Configure RESET as input pin now!
+#ifndef CPU_Z80
+  gpio_init(TRS_RESET);
 #endif
+  gpio_set_dir(TRS_RESET, GPIO_IN);
+  gpio_set_pulls(TRS_RESET, false, false);
+
+  //trs_screen_setMode(MODE_TEXT_80x24);
+  trs_screen_setMode(MODE_TEXT_64x16);
+
+  HyperGfxFlashFSInit();
+  HyperGfxInit();
 
   while(true) {
     HyperGfxHandleGfx();    
@@ -849,14 +1292,30 @@ void start_system(void)
     DebugShow();    
 #endif
     HyperGfxHandleCmdQueue();
+    if (got_reset == false) {
+      got_reset = poll_reset();
+    }
+
 #if (defined(CPU_EMU) || defined(CPU_Z80))
 #ifdef HAS_USBHOST
     // tinyusb host task
     tuh_task();
     hid_app_task();
 #endif
+#else
+    repeating_timer_callback(nullptr);    
+/*
+    if (got_reset) {
+      if (hyper_enabled) {
+        repeat_cnt = 0;
+        cmdstring_pt = &trscopy[0];
+        send_cmdstring = true;
+        writeFuncTable_hyper[31]=writeMEMTOPF800;
+      }      
+    }
+*/    
 #endif        
-    __dmb();        
+    __dmb();
   }
 }
 

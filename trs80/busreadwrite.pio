@@ -20,16 +20,14 @@
 ;    x    - select Data, active low
 ;
 
-;    wait 1 GPIO, CONFIG_PIN_BUS_RD side 0
-    set PINS, 0b111 side 0 
 .wrap_target
 skip:
     set PINS, 0b111 side 0    
 
     wait 0 GPIO, CONFIG_PIN_BUS_RD [1] side 0   ; wait for RD to fall
-    set PINS, 0b110 side 0 [4]                  ; enable AddrHi tranceiver
+    set PINS, 0b110 side 0 [6]                  ; enable AddrHi tranceiver
     in PINS, 8      side 0                      ; read AddrHi[15:8] into ISR
-    set PINS, 0b101 side 0 [4]                  ; enable AddrLo tranceiver
+    set PINS, 0b101 side 0 [6]                  ; enable AddrLo tranceiver
     in PINS, 8      side 0                      ; read AddrLo[7:0] into ISR
 
     pull            side 0                      ; pull 32 bit in OSR (block till something there)
@@ -44,25 +42,23 @@ skip:
     out PINS, 8     side 1                      ; output Data[7:0]
 
     wait 1 GPIO, CONFIG_PIN_BUS_RD [1] side 1   ; wait for RD to rise 
-    ;nop             side 1 [4] ; 6
+    set PINS, 0b111 side 0
     mov OSR, NULL   side 1                      ; change data pins as inputs (0)
     out PINDIRS, 8  side 1 
-;    set PINS, 0b111 side 0    
 .wrap
 
 
 .program buswrite
-;    wait 1 GPIO, CONFIG_PIN_BUS_WR
-    set PINS, 0b111
 .wrap_target
     wait 0 GPIO, CONFIG_PIN_BUS_WR [1]          ; wait for WR to fall
-    set PINS, 0b110  [4]                        ; enable AddrHi tranceiver
+    set PINS, 0b110  [6]                        ; enable AddrHi tranceiver
     in PINS, 8                                  ; read AddrHi[15:8] into ISR <--- to left
-    set PINS, 0b101  [4]                        ; enable AddrLo tranceiver
+    set PINS, 0b101  [6]                        ; enable AddrLo tranceiver
     in PINS, 8                                  ; read AddrLo[7:0] into ISR  <--- to left
-    set PINS, 0b011  [4]                        ; enable Data tranceiver
+    set PINS, 0b011  [6]                        ; enable Data tranceiver
     in PINS, 8                                  ; read Data[7:0] into ISR  <--- to left
+
+    set PINS, 0b111
   
     wait 1 GPIO, CONFIG_PIN_BUS_WR [1]             ; wait for WR to raise
-    set PINS, 0b111
 .wrap

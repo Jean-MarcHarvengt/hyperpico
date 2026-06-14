@@ -16,12 +16,12 @@ typedef unsigned long long tstate_t;
 //#define TRS_MODEL4 1
 
 #ifdef TRS_MODEL4
-#define MEM_SIZE (2 * 64738)
+#define MEMORY_SIZE (2 * 64738)
 #else
-#define MEM_SIZE (64738)
+#define MEMORY_SIZE (64738)
 #endif
 
-extern unsigned char memory[MEM_SIZE];;
+extern unsigned char memory[MEMORY_SIZE];;
 
 
 #ifdef TRS_MODEL4
@@ -56,15 +56,19 @@ enum rom_type_t {
     ROM_TEST1,
     ROM_TEST2,
     ROM_TEST3,    
+    ROM_DIAG    
 };
 
 #define getROMType() ROM_FREHD //ROM_XROM
+//#define getROMType() ROM_DIAG
 //#define getROMType() ROM_TEST2
+
 
 
 extern void trs_timer_speed(int fast);
 extern void trs_init(void);
 extern void trs_step(void);
+extern void trs_cycles(unsigned int tstates);
 extern void trs_go(void);
 extern void trs_pauze(void);
 extern void trs_play(unsigned short entryAddr);

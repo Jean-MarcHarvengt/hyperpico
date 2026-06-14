@@ -11,6 +11,8 @@
 // Clock
 #define TRS_CLOCK              27  // Z80 clock output
 #define CONFIG_PIN_BUS_IOOUT   27  // OR IO OUT on TRS80 real system (PET VOUT)
+#define HYPERGFX_ENA_INPUT     27  // on real TRS80 MODEL III !
+
 
 // Reset
 #define TRS_RESET              28  //( PET VIN)

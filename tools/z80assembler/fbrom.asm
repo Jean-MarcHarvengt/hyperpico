@@ -42,7 +42,8 @@ CMD_READFILE:     equ 28
 
 dw code_start
 
-ORG   $e701   
+;ORG   $e701   
+ORG   $eb00   
 
 code_start: 
         jp topdir               ; goto root dir and clear
@@ -65,7 +66,9 @@ copydir:
         ld a,0
         ld (curpage), a
 loopdir:        
-        call waitstatusdone
+        ld a,(REG_TSTATUS)      ; wait status done
+        or a
+        jr nz,loopdir
 
         ld de,REG_TLOOKUP
         ld a,(de)
@@ -160,7 +163,25 @@ got_number:
         ld h,a
         ld a,(hl)
         cp 0
-        jr   nz,loadfile
+        jr   z,readdir
+
+
+;        ld a,(loader_size)
+;        ld c,a
+;        ld hl,loader_start      ; loader
+;        ld de,$3c00
+;copyloader:
+;        ld a,(hl)
+;        ld (de),a
+;        inc hl
+;        inc de
+;        dec c
+;        ld a,c
+;        cp 0
+;        jr nz,copyloader
+;        jp $3c00
+
+        jp loadfile
 
 readdir:
         call append_to_path     ; b contains file index
@@ -168,142 +189,10 @@ readdir:
         call clear_screen
         jp loop
 
-loadfile:
-        ld a,CMD_OPENFILE       ; cmd_openfile
-        ld (REG_TCOMMAND),a
-        ld a,b                  ; b contains file index
-        ld (REG_TPARAMS),a
-        call waitstatusdone
-        ld a,(REG_TLOOKUP)      ; check if file could be opened
-        cp 0
-        jp z,error_loadfile
-nextblock:
-        ld b,1                  ; load cmd record block type
-        call readfile_nbytes
-        cp 1
-        jp nz,error_loadfile
-        ld a,(REG_TLOOKUP+1)
-        cp 1                    ; type <LOAD> block?
-        jr nz,next_block_type1
-
-        ld b,1                  ; load len
-        call readfile_nbytes
-        cp 1
-        jp nz,error_loadfile
-        ld a,(REG_TLOOKUP+1)
-        ld c,a                  ; len
-        ld b,2                  ; load address
-        call readfile_nbytes
-        cp 2
-        jp nz,error_loadfile
-        ld a,(REG_TLOOKUP+1)    ; lo
-        ld l,a
-        ld a,(REG_TLOOKUP+2)    ; hi
-        ld h,a
-        ld a,c
-        cp 0                    ; 0+256-2 => 254
-        jr nz,nextl1
-        ld c,254
-        jp load
-nextl1:
-        cp 1                    ; 1+256-2 => 255
-        jr nz,nextl2
-        ld c,255
-        jr load
-nextl2:
-        cp 2                    ; 2+256-2 => 256
-        jr nz,nextl3
-        ld c,1
-
-        ld b,c                  ; load len
-        call readfile_nbytes
-        cp c
-        jp nz,error_loadfile
-        ld de,REG_TLOOKUP+1
-        ld b,c
-        call copy
-        ld c,255
-        jr load
-nextl3:
-        ld a,c
-        sub a,2
-        ld c,a
-load:
-        ld b,c                  ; load len
-        call readfile_nbytes
-        cp c
-        jp nz,error_loadfile
-        ld de,REG_TLOOKUP+1
-        ld b,c
-        call copy
-
-        jr nextblock
 
 
-next_block_type1:
-        cp 2                    ; type <ENTRY_ADDRESS> block?
-        jp nz,next_block_type2
-        ld b,1                  ; load len
-        call readfile_nbytes
-        cp 1
-        jp nz,error_loadfile
-        ld a,(REG_TLOOKUP+1)
-        ld b,a
-        call readfile_nbytes
-        ld a,(REG_TLOOKUP+1)    ; lo
-        ld (startaddress+1),a
-        ld a,(REG_TLOOKUP+2)    ; hi
-        ld (startaddress+2),a
-;        ld a,(REG_TLOOKUP+1)
-;        rra
-;        rra
-;        rra
-;        rra
-;        add $30
-;        ld (REG_TEXTMAP_L1),a
-;        ld a,(REG_TLOOKUP+1)
-;        and $f
-;        add $30
-;        ld (REG_TEXTMAP_L1+1),a
-;        ld a,(REG_TLOOKUP+2)
-;        rra
-;        rra
-;        rra
-;        rra
-;        add $30
-;        ld (REG_TEXTMAP_L1+2),a
-;        ld a,(REG_TLOOKUP+2)
-;        and $f
-;        add $30
-;        ld (REG_TEXTMAP_L1+3),a      
-        ld a, $00
-        ld (REG_BG_COL), a
-startaddress:        
-        jp startaddress
 
 
-next_block_type2:
-        cp 5                    ; type <HEADER> block?
-        jr nz,next_block_type3
-        ld b,1                  ; load len
-        call readfile_nbytes
-        cp 1
-        jp nz,error_loadfile
-        ld a,(REG_TLOOKUP+1)
-        ld b,a
-        call readfile_nbytes
-        jp nextblock
-
-
-next_block_type3:
-        jp exit
-
-error_loadfile:
-        add a,$30
-        ld (REG_TEXTMAP_L1),a
-        ld a, $80
-        ld (REG_BG_COL), a
-        jp waitkey
 
 
 
@@ -349,44 +238,13 @@ exit:
 ; #######################################@
 ; wait for command execution
 ; #######################################@
-waitstatusdone:
-        ld a,(REG_TSTATUS)
-        or a
-        jr nz,waitstatusdone
-        ret
+;waitstatusdone:
+;        ld a,(REG_TSTATUS)
+;        or a
+;        jr nz,waitstatusdone
+;        ret
 
-; #######################################@
-; read n bytes from filept
-; b = nb bytes to read (max 255)
-; #######################################@
-readfile_nbytes:
-        ld a,CMD_READFILE       ; cmd_readfile
-        ld (REG_TCOMMAND),a
-        ld a,b                  ; b contains nb bytes
-        ld (REG_TPARAMS),a
-        call waitstatusdone
-        ld a,(REG_TLOOKUP)      ; a = nb bytes read
-        ret
 
-; #######################################@
-; copy block
-; de = source
-; hl = destination
-; b = len
-; #######################################@
-copy:
-        ld a,(de)
-        ld (hl),a
-        inc de
-        inc hl
-        dec b
-        ld a,b
-        cp 0
-        jr nz,copy
-        ld a,(REG_BG_COL)
-        inc a
-        ld (REG_BG_COL),a
-        ret
 
 ; #######################################@
 ; extend path with filename at index
@@ -628,3 +486,13 @@ db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 line9:
 db 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
 filenames_end:
+
+loader_size:
+db (loader_end-loader_start)
+db 0
+
+loader_start:
+;incbin 'loader.bin'
+include 'loader.asm'
+loader_end:
+

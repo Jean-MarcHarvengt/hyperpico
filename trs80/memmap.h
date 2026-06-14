@@ -2,15 +2,32 @@
 #define MEMMAP_H
 
 
+// Uncoment of the option below
+// CPU_EMU => full emulation mode
+// CPU_Z80 => With Z80 CPU standalone mode
+// TRS_16K => Plugged in TRS80 model1 with 16K (via expansion port or replacing Z80 IC)
+// TRS_4K  => Plugged in TRS80 model1 with 4K (via expansion port or replacing Z80 IC)
+
 #define CPU_EMU       1
 //#define CPU_Z80       1
-//#define TRS_48K       1
-//#define TRS_16K       1
 //#define TRS_4K        1
+//#define TRS_16K       1
+//#define TRS_32K       1
+//#define TRS_48K       1 // NO_HYPERGFX!!!
 
+// keep NO_LOWERCASEMOD and IGNORE_IOMEM to 1, keep TRS_EXPANSION commented
+
+//#define TRS_EXPANSION 1 //lower pio speed (clock divider)
+#define NO_LOWERCASEMOD 1
+#define IGNORE_IOMEM 1
+
+//#define SIMULATE_ROM 1
 //#define BUS_DEBUG     1
 //#define HAS_ASMIRQ    1
 
+#ifdef CPU_Z80
+#undef IGNORE_IOMEM
+#endif
 
 #include "stdint.h"
 
