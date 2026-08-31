@@ -4,8 +4,11 @@
 #include "stdint.h"
 
 
-#define CPU_EMU       1
-//#define HAS_PETIO       1  	// PET extension (or standalone emu)
+#define CPU_EMU       1  // standalone emulated CPU
+//#define CPU_6502      1  // standlone with 6502 CPU
+//#define PET_32K       1  // inside PET
+//#define PET_16K       1  // inside PET
+
 
 #define PETIO_A000      1     // enable A000-AFFF ROM emulation
 #define PETIO_EDIT      1     // enable E000-E7FF ROM emulation
@@ -261,6 +264,8 @@
 #define HCURTAIN_16       ( 0x4 + 0x8 ) 
 #define VCURTAIN_8        ( 0x20 )  
 #define VCURTAIN_16       ( 0x20 + 0x40 )  
+
+// sys 40960 => filebrowser
 
 extern void start_system(void);
 

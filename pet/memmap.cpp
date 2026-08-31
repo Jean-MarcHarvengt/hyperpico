@@ -13,8 +13,9 @@ extern "C" {
   #include "iopins.h"   
 }
 
-#ifdef HAS_PETIO
-#include "petbus.pio.h"
+#ifndef CPU_EMU
+#include "busreadwrite.pio.h"
+#include "clock.pio.h"
 #endif
 
 #include "hypergfx.h"
@@ -24,15 +25,20 @@ extern "C" {
 #include "edit480.h"
 #include "edit450.h"
 #include "edit48050.h"
+#include "memory.h"
 
 #ifdef PETIO_A000
 #include "fb.h"
 //#include "vsync.h"
 #endif         
 
+uint8_t memory[MEMORY_SIZE];
+
+#if (defined(CPU_EMU) || defined(CPU_6502))
 #ifdef CPU_EMU
 // 6502 emu
 #include "mos6502.h"
+#endif
 #include "basic4_b000.h"
 #include "basic4_c000.h"
 #include "basic4_d000.h"
@@ -48,11 +54,11 @@ extern "C" void hid_app_task(void);
 #include "usb_serial.h"
 #endif
 
-#define PET_MEMORY_SIZE 0x8000 // for 32k
 
 // 6502 emu
+#ifdef CPU_EMU
 static mos6502 mos;
-static uint8_t petram[PET_MEMORY_SIZE];
+#endif
 static bool pet_running = true;
 static bool prg_start = false;
 static uint16_t prg_add_start;
@@ -117,21 +123,9 @@ static const uint8_t asciimap[8*10] = {
 
 #endif
 
-
-// PET shadow memory 8000-9fff
-// unsigned char *mem;
-// PET shadow memory a000-afff
-#ifdef PETIO_A000
-static unsigned char mem_a000[0x1000];
-#endif
-// PET shadow memory e000-a7ff
-#ifdef PETIO_EDIT
-static unsigned char mem_e000[0x0800];
-#endif
 static bool got_reset = false;
 
 
-#ifdef CPU_EMU
 
 #ifdef HAS_USBHOST
 // ****************************************
@@ -172,101 +166,10 @@ static uint8_t ascii2rowcol(uint8_t chr)
   return rowcol; 
 }  
 
-uint8_t readWord( uint16_t location)
-{
-  if (location < 0x8000)  {
-    if (location < PET_MEMORY_SIZE) {
-      return petram[location];
-    }
-    else {
-      return 0xff;
-    }  
-  }
-  else if (location < 0xa000) {
-    return HyperGfxRead(location);
-  }  
-  else if (location < 0xb000) {
-#ifdef PETIO_A000
-    return mem_a000[location-0xa000];
-#else
-    return 0;
-#endif    
-  }  
-  else if (location < 0xc000) {
-    return basic4_b000[location-0xb000];
-  }  
-  else if (location < 0xd000) {
-    return basic4_c000[location-0xc000];
-  }  
-  else if (location < 0xe000) {
-    return basic4_d000[location-0xd000];
-  } 
-  else if (location < 0xe800) {
-    if (HyperGfxIsPal()) { 
-      if (!HyperGfxIsHires())      
-        return edit450[location-0xe000];
-      else
-        return edit48050[location-0xe000];
-    } 
-    else {
-      if (!HyperGfxIsHires())      
-        return edit4[location-0xe000];
-      else
-        return edit480[location-0xe000];
-    }    
-  } 
-  else if ( (location > 0xe800) && (location < 0xf000) ) {
-    if (location == 0xe812)         // PORT B
-      return (_rows[_row] ^ 0xff);    
-    else if (location == 0xe810)    // PORT A
-      return (_row | 0x80); 
-#ifdef HAS_USBHOST
-    else if (location == 0xe84f)    // PORT Joystick
-      return (joystick0); 
-#endif
-    else
-      return 0x00;
-  }  
-  else {
-    return kernal4[location-0xf000];
-  }
-}
 
-void writeWord( uint16_t location, uint8_t value)
-{
-  if (location < 0x8000) { 
-    if (location < PET_MEMORY_SIZE) {
-      petram[location] = value;
-    }
-  }
-  else if (location < 0xa000) {
-    HyperGfxWrite(location, value);
-  }
-#ifdef PETIO_A000
-  else if (location < 0xb000) {
-    mem_a000[location-0xa000] = value;
-  }
-#endif
-  else if ( (location > 0xe800) && (location < 0xf000) ) {
-    if (location == 0xe812)       // PORT B
-    {
-    } 
-    else if (location == 0xe810)  // PORT A
-    {
-      _row = (value & 0x0f);
-    }          
-    else if (location == 0xe84C) {
-      if (value & 0x02) 
-      {
-        font_lowercase = true;
-      }
-      else 
-      {
-        font_lowercase = false;
-      }
-    }  
-  }
-}
+
+#if (defined(CPU_EMU) || defined(CPU_6502))
+
 
 static void pet_kdown(uint8_t asciicode, bool shiftl, bool shiftr ) {
   _set(ascii2rowcol(asciicode));
@@ -302,7 +205,7 @@ static void pet_prg_write(uint8_t * src, int length )
     else
     {
       //printf("%02x\n",*src);
-      petram[prg_add_cur++] = *src++;
+      memory[prg_add_cur++] = *src++;
     } 
     length  = length - 1;
     if ( length == 0) return;
@@ -312,19 +215,19 @@ static void pet_prg_write(uint8_t * src, int length )
 static void pet_prg_run( void )
 {
   uint8_t lo,hi;
-  petram[0xc7] = petram[0x28];
-  petram[0xc8] = petram[0x29];
+  memory[0xc7] = memory[0x28];
+  memory[0xc8] = memory[0x29];
 
   lo = (uint8_t)(prg_add_cur & 0xff);
   hi = (uint8_t)(prg_add_cur >> 8);
-  petram[0x2a] = lo;
-  petram[0x2c] = lo;
-  petram[0x2e] = lo;
-  petram[0xc9] = lo;
-  petram[0x2b] = hi;
-  petram[0x2d] = hi;
-  petram[0x2f] = hi;
-  petram[0xca] = hi;
+  memory[0x2a] = lo;
+  memory[0x2c] = lo;
+  memory[0x2e] = lo;
+  memory[0xc9] = lo;
+  memory[0x2b] = hi;
+  memory[0x2d] = hi;
+  memory[0x2f] = hi;
+  memory[0xca] = hi;
 
   pet_running = true;
   prg_start = true;
@@ -340,12 +243,10 @@ static void pet_reset( void )
 
 static void pet_start(void) 
 {
-  for (int i=0;i<PET_MEMORY_SIZE;i++) 
-  {
-    petram[i] = 0;
-  }
- 
+  memset((void *)&memory[0], 0, RAM_SIZE); 
+#ifdef CPU_EMU
   mos.Reset();
+#endif
   for (int i = sizeof(_rows); i--; )
     _rows[i] = 0;
   pet_running = true;
@@ -354,6 +255,7 @@ static void pet_start(void)
 }
 
 
+#ifdef CPU_EMU
 #define PET_LINES  (260)
 #define PET_CYCLES (PET_LINES*64) //16600 //9000
 
@@ -367,6 +269,7 @@ static void pet_remaining(void)
   mos.Run((PET_CYCLES/PET_LINES)*(PET_LINES-200));
   mos.IRQ();
 }
+#endif
 
 // ****************************************
 // Keyboard
@@ -380,7 +283,7 @@ static bool send_cmdstring = false;
 static const char * cmdstring_pt;
 //static const char petlistruncmd[] = {'L', 'I', 'S', 'T', 0x0d, 'R', 'U', 'N', 0x0d, 0}; // LIST + RUN
 static const char petruncmd[] = {'R', 'U', 'N', 0x0d, 0}; // RUN 
-static const char petfbcmd[] = {1, 'S', 'Y', 'S', '4', '0', '9', '6', '0' ,0x0d, 0}; // RUN 
+static const char petfbcmd[] = {1,1,1, 'S', 'Y', 'S', '4', '0', '9', '6', '0' ,0x0d, 0}; // RUN 
 
 static bool repeating_timer_callback(struct repeating_timer *t) {
     if (repeat_cnt ) repeat_cnt--;
@@ -550,82 +453,163 @@ static int serial_rx(uint8_t* buf, int len) {
 
 #endif
 
-#ifdef HAS_PETIO
-// Petbus PIO config
-#define CONFIG_PIN_PETBUS_DATA_BASE 0 /* 8+1(RW) pins */
-#define CONFIG_PIN_PETBUS_RW (CONFIG_PIN_PETBUS_DATA_BASE + 8)
-#define CONFIG_PIN_PETBUS_CONTROL_BASE (CONFIG_PIN_PETBUS_DATA_BASE + 9) //CE DATA,ADDRLO,ADDRHI
+#ifndef CPU_EMU
+/********************************
+ * PIO variables/config
+********************************/ 
+
+// 6502 PIO config
+#define CONFIG_PIN_PETBUS_RW (CONFIG_PIN_BUS_DATA_BASE + 8)
 #define CONFIG_PIN_PETBUS_PHI2  26
-#define CONFIG_PIN_PETBUS_DATADIR 28
-#define CONFIG_PIN_PETBUS_RESET 22
 
-#define VALID_CYCLE ((1 << CONFIG_PIN_PETBUS_PHI2) | (1 << CONFIG_PIN_PETBUS_RESET))
+// real PET PIO config (and control pin reversed!)
+//#define CONFIG_PIN_PETBUS_DATADIR 28
+//#define CONFIG_PIN_PETBUS_RESET 22
 
-const PIO pio = pio1;
-const uint sm = 0;
-const uint smread = 1;
 
-#define RESET_TRESHOLD 15000
-static uint32_t reset_counter = 0;
+// standalone PET
+#define CONFIG_PIN_PETBUS_DATADIR 22
+//#define CONFIG_PIN_PETBUS_RESET 28
 
-extern uint8_t cmd;
+static PIO bus_pio = pio1;
+static uint bus_smw = 0;
+static uint bus_smr = 1;
 
-extern uint8_t __not_in_flash("cmd_params") cmd_params[MAX_PAR];
-extern int tra_h;
-extern uint8_t __not_in_flash("cmd_params_len") cmd_params_len[]; 
-extern void __not_in_flash("traParamFuncPtr") (*traParamFuncPtr[])(void);
-extern void __not_in_flash("traDataFuncPtr") (*traDataFuncPtr[])(uint8_t);
-extern void pushCmdQueue(QueueItem cmd );
+#ifdef CPU_6502
+static PIO clock_pio;
+static uint clock_sm;
+#endif
 
-static uint8_t cmd_param_ind;
-static uint8_t cmd_tra_depth;
+#define PIO_CLK_DIV 1.0f // 8MHz/8  (pio slower)
+
+#define PIO_BUS_DIV 1.0f // 8MHz/8  (pio slower)
+
+#endif
+
+
 
 /********************************
- * petio PIO read table
+ * read table
 ********************************/ 
-static void __not_in_flash("readNone") readNone(uint32_t address) {
-  pio1->txf[smread] = 0;
+#ifdef CPU_EMU  
+static uint8_t __not_in_flash("readMEM") readMEM(uint16_t address) {
+  return (memory[address]);
+#else
+static void __not_in_flash("readMEM") readMEM(uint16_t address) {
+  bus_pio->txf[bus_smr] = 0x100 | memory[address];
+#endif  
 }
 
-static void __not_in_flash("read8000") read8000(uint32_t address) {
-  pio1->txf[smread] = 0x100 | mem[address-0x8000];
+#ifdef CPU_EMU  
+static uint8_t __not_in_flash("readNone") readNone(uint16_t address) {
+  return (memory[address]);
+#else
+static void __not_in_flash("readNone") readNone(uint16_t address) {
+//  bus_pio->txf[bus_smr] = 0x100 | memory[address];
+  bus_pio->txf[bus_smr] = 0;
+#endif  
 }
 
-static void __not_in_flash("read9000") read9000(uint32_t address) {
-  pio1->txf[smread] = 0x100 | mem[address-0x8000];
+#ifdef CPU_EMU  
+static uint8_t __not_in_flash("read9000") read9000(uint16_t address) {
+  return (memory[address]);
+#else
+static void __not_in_flash("read9000") read9000(uint16_t address) {
+  bus_pio->txf[bus_smr] = 0x100 | memory[address];
+#endif  
 }
 
-static void __not_in_flash("readA000") readA000(uint32_t address) {
+#ifdef CPU_EMU  
+static uint8_t __not_in_flash("readA000") readA000(uint16_t address) {
 #ifdef PETIO_A000
-  pio1->txf[smread] = 0x100 | mem_a000[address-0xa000];
+  return (memory[address]);
 #else
-  pio1->txf[smread] = 0;
+  return 0;
 #endif
+#else
+static void __not_in_flash("readA000") readA000(uint16_t address) {
+#ifdef PETIO_A000
+  bus_pio->txf[bus_smr] = 0x100 | memory[address];
+#else
+  bus_pio->txf[bus_smr] = 0;
+#endif
+#endif  
 }
 
-static void __not_in_flash("readE000") readE000(uint32_t address) {
-#ifdef PETIO_EDIT        
+#ifdef CPU_EMU  
+static uint8_t __not_in_flash("readE000") readE000(uint16_t address) {
   if (address < 0xe800) {
-    pio1->txf[smread] = 0x100 | mem_e000[address-0xe000];
+    return (memory[address]);
   }
+  else {    
+    if (address == 0xe812)         // PORT B
+      return (_rows[_row] ^ 0xff);    
+    else if (address == 0xe810)    // PORT A
+      return (_row | 0x80); 
+#ifdef HAS_USBHOST
+    else if (address == 0xe84f)    // PORT Joystick
+      return (joystick0); 
+#endif
+    else
+      return 0x00;
+  } 
+#else
+static void __not_in_flash("readE000") readE000(uint16_t address) {
+  if (address < 0xe800) {
+#ifdef PETIO_EDIT
+    bus_pio->txf[bus_smr] = 0x100 | memory[address];
+#else
+    bus_pio->txf[bus_smr] = 0;
+#endif
+  }
+#ifdef CPU_6502
   else {
-    pio1->txf[smread] = 0;
+    if (address == 0xe812)         // PORT B
+      bus_pio->txf[bus_smr] = 0x100 | (_rows[_row] ^ 0xff);
+    else if (address == 0xe810)    // PORT A
+      bus_pio->txf[bus_smr] = 0x100 | (_row | 0x80); 
+#ifdef HAS_USBHOST
+    else if (address == 0xe84f)    // PORT Joystick
+      bus_pio->txf[bus_smr] = 0x100 | joystick0; 
+#endif
+    else
+      bus_pio->txf[bus_smr] = 0x100 | 0;
   }
 #else
-  pio1->txf[smread] = 0;
-#endif
+  bus_pio->txf[bus_smr] = 0;
+#endif  
+#endif  
 }
 
-static void __not_in_flash("readFuncTable") (*readFuncTable[16])(uint32_t)
+#ifdef CPU_EMU  
+static uint8_t __not_in_flash("readFuncTable") (*readFuncTable[16])(uint16_t)
+#else
+static void __not_in_flash("readFuncTable") (*readFuncTable[16])(uint16_t)
+#endif
 {
-  readNone, // 0
+#if (defined(PET_16K) || defined(PET_32K))
+  readNone, // 0 (first 16k)
   readNone, // 1
   readNone, // 2 
   readNone, // 3
-  readNone, // 4
+#else
+  readMEM, // 0
+  readMEM, // 1
+  readMEM, // 2 
+  readMEM, // 3
+#endif
+#if (defined(PET_32K))
+  readNone, // 4 (second 16k)
   readNone, // 5
   readNone, // 6
   readNone, // 7
+#else
+  readMEM, // 4
+  readMEM, // 5
+  readMEM, // 6
+  readMEM, // 7
+#endif
+#if (defined(PET_16K) || defined(PET_32K))
   readNone, // 8
   read9000, // 9
   readA000, // a
@@ -634,67 +618,77 @@ static void __not_in_flash("readFuncTable") (*readFuncTable[16])(uint32_t)
   readNone, // d
   readE000, // e
   readNone, // f
+#else
+  readMEM,  // 8
+  readMEM,  // 9
+  readMEM,  // a
+  readMEM,  // b
+  readMEM,  // c
+  readMEM,  // d
+  readE000, // e
+  readMEM,  // f
+#endif  
 };
 
 /********************************
- * petio PIO write table
+ * write table
 ********************************/ 
-static void __not_in_flash("writeNone") writeNone(uint32_t address, uint8_t value) {
-  pio_sm_drain_tx_fifo(pio,smread);
+static void __not_in_flash("writeNone") writeNone(uint16_t address, uint8_t value) {
+
+#ifdef CPU_EMU  
+#else
+//  pio_sm_drain_tx_fifo(bus_pio,bus_smr);
+#endif  
 }
 
-static void __not_in_flash("write89000") write89000(uint32_t address, uint8_t value) {
-  switch (address-0x8000) 
-  {  
-    case REG_TDEPTH:
-      cmd_tra_depth = value&0x0f;
-      break;
-    case REG_TCOMMAND:
-      cmd_param_ind = 0;
-      cmd = value & (MAX_CMD-1);
-      if (!cmd_params_len[cmd]) {
-        traParamFuncPtr[cmd]();
-      }
-      break;
-    case REG_TPARAMS:
-      if (cmd_param_ind < MAX_PAR) cmd_params[cmd_param_ind++]=value;
-      if (cmd_param_ind == cmd_params_len[cmd]) {
-        traParamFuncPtr[cmd]();
-      }
-      break;
-    case REG_TDATA:
-      if (tra_h)
-      {
-        traDataFuncPtr[cmd_tra_depth](value);
-        if (!tra_h) {
-          switch (cmd) 
-          {
-            case cmd_transfer_packed_tile_data:
-              pushCmdQueue({cmd_transfer_packed_tile_data,(uint8_t)0,(uint16_t)((cmd_params[0]<<8)+cmd_params[1])});
-              break;
-            case cmd_transfer_packed_sprite_data:
-              pushCmdQueue({cmd_transfer_packed_sprite_data,(uint8_t)0,(uint16_t)((cmd_params[0]<<8)+cmd_params[1])});
-              break;
-            case cmd_transfer_packed_bitmap_data:
-              pushCmdQueue({cmd_transfer_packed_bitmap_data,(uint8_t)0,(uint16_t)((cmd_params[0]<<8)+cmd_params[1])});
-              break;
-          }
-        }  
-      }   
-      break;
-    default:
-      mem[address-0x8000] = value;
-      break;
-  } 
+static void __not_in_flash("writeMEM") writeMEM(uint16_t address, uint8_t value) {
+#ifdef CPU_EMU
+  memory[address] = value;  
+#else
+  memory[address] = value; 
+#endif  
 }
 
-static void __not_in_flash("writeA000") writeA000(uint32_t address, uint8_t value) {
+
+static void __not_in_flash("writeA000") writeA000(uint16_t address, uint8_t value) {
+#ifdef CPU_EMU  
+  memory[address] = value;  
+#else
 #ifdef PETIO_A000
-  mem_a000[address-0xa000] = value;
+  memory[address] = value;  
 #endif
+#endif  
 }
 
-static void __not_in_flash("writeE000") writeE000(uint32_t address, uint8_t value) {
+static void __not_in_flash("writeE000") writeE000(uint16_t address, uint8_t value) {
+#ifdef CPU_EMU
+  if (address == 0xe812)       // PORT B
+  {
+  } 
+  else if (address == 0xe810)  // PORT A
+  {
+    _row = (value & 0x0f);
+  }          
+  else if (address == 0xe84C) {
+    if (value & 0x02) 
+    {
+      font_lowercase = true;
+    }
+    else 
+    {
+      font_lowercase = false;
+    }
+  }  
+#else
+#ifdef CPU_6502  
+  if (address == 0xe812)       // PORT B
+  {
+  } 
+  else if (address == 0xe810)  // PORT A
+  {
+    _row = (value & 0x0f);
+  } else  
+#endif  
   if (address == 0xe84C)
   {
     // e84C 12=LO, 14=HI
@@ -707,20 +701,36 @@ static void __not_in_flash("writeE000") writeE000(uint32_t address, uint8_t valu
       font_lowercase = false;
     }
   }
+#endif  
 }
 
-static void __not_in_flash("writeFuncTable") (*writeFuncTable[16])(uint32_t,uint8_t)
+static void __not_in_flash("writeFuncTable") (*writeFuncTable[16])(uint16_t,uint8_t)
 {
-  writeNone, // 0
+#if (defined(PET_16K) || defined(PET_32K))
+  writeNone, // 0 (first 16k)
   writeNone, // 1
   writeNone, // 2 
   writeNone, // 3
-  writeNone, // 4
+#else
+  writeMEM, // 0
+  writeMEM, // 1
+  writeMEM, // 2 
+  writeMEM, // 3
+#endif
+#if (defined(PET_32K))
+  writeNone, // 4 (second 16k)
   writeNone, // 5
   writeNone, // 6
   writeNone, // 7
-  write89000, // 8
-  write89000, // 9
+#else
+  writeMEM, // 4
+  writeMEM, // 5
+  writeMEM, // 6
+  writeMEM, // 7
+#endif
+  //HyperGfxWrite, // 8
+  writeMEM,
+  HyperGfxWrite, // 9
   writeA000, // a
   writeNone, // b
   writeNone, // c
@@ -730,179 +740,266 @@ static void __not_in_flash("writeFuncTable") (*writeFuncTable[16])(uint32_t,uint
 };
 
 
-/********************************
- * petio loop
-********************************/ 
-void __not_in_flash("__time_critical_func") petbus_loop(void) {
-  for(;;) {
-    //uint32_t allgpios = sio_hw->gpio_in; 
-    //if ((allgpios & VALID_CYCLE) == VALID_CYCLE) {
-      uint32_t value = pio_sm_get_blocking(pio, sm);
-      const bool is_write = ((value & (1u << (CONFIG_PIN_PETBUS_RW - CONFIG_PIN_PETBUS_DATA_BASE))) == 0);
-      uint16_t address = (value >> 9) & 0xffff;      
-      if (is_write)
-      {
-        writeFuncTable[address>>12](address, value & 0xff);
-      }
-      else {
-        readFuncTable[address>>12](address);
-      }      
-    //}
-  }
+#ifdef CPU_EMU
+uint8_t readWord( uint16_t location)
+{
+  return readFuncTable[location>>12](location);
 }
 
-/********************************
- * Initialization
-********************************/ 
-void petbus_init(void)
-{ 
-  // Init PETBUS read SM
-  uint progra_offsetread = pio_add_program(pio, &petbus_device_read_program);
-  pio_sm_claim(pio, smread);
-  pio_sm_config cread = petbus_device_read_program_get_default_config(progra_offsetread);
-  // map the OUT pin group to the data signals
-  sm_config_set_out_pins(&cread, CONFIG_PIN_PETBUS_DATA_BASE, 8);
-  // map the SET pin group to the Data transceiver control signals (+ CS 9000/A000/E000)
-  sm_config_set_set_pins(&cread, CONFIG_PIN_PETBUS_DATADIR, 1);
-  pio_sm_init(pio, smread, progra_offsetread, &cread);
+void writeWord( uint16_t location, uint8_t value)
+{
+  writeFuncTable[location>>12](location,value);
+}
 
-  // Init PETBUS main SM
-  uint progra_offset = pio_add_program(pio, &petbus_program);
-  pio_sm_claim(pio, sm);
-  pio_sm_config c = petbus_program_get_default_config(progra_offset);
+#else
+
+#ifdef BUS_DEBUG
+static char hex[16] = {'0','1','2','3','4','5','6','7','8','9',1,2,3,4,5,6};
+static int firstadd=0;
+#endif
+
+/********************************
+ * PIO code and init
+********************************/ 
+
+void __not_in_flash("__time_critical_func") pioirq_smw(void) {
+  //if(!pio_sm_is_rx_fifo_empty(bus_pio, bus_smw)) {
+    uint32_t value = pio_sm_get(bus_pio, bus_smw);
+    const bool is_write = ((value & (1u << (CONFIG_PIN_PETBUS_RW))) == 0);
+    uint16_t address = (value >> 9) & 0xffff;
+    if (is_write)
+    {
+#ifdef BUS_DEBUG
+      if (firstadd < 64) {
+        //memory[0x8050+firstadd++] = hex[(value>4) & 0xf];
+        //memory[0x8050+firstadd++] = hex[(value>) & 0xf];
+        memory[0x8050+firstadd++] = hex[(address>>12) & 0xf];
+        memory[0x8050+firstadd++] = hex[(address>>8)  & 0xf];
+        memory[0x8050+firstadd++] = hex[(address>>4)  & 0xf];
+        memory[0x8050+firstadd++] = hex[(address)     & 0xf];
+      }
+#endif
+      writeFuncTable[address>>12](address, value & 0xff);
+    }
+    else {
+#ifdef BUS_DEBUG
+      if (firstadd <64) {
+        //memory[0x8000+firstadd++] = hex[(value>4) & 0xf];
+        //memory[0x8000+firstadd++] = hex[(value) & 0xf];
+        memory[0x8000+firstadd++] = hex[(address>>12) & 0xf];
+        memory[0x8000+firstadd++] = hex[(address>>8)  & 0xf];
+        memory[0x8000+firstadd++] = hex[(address>>4)  & 0xf];
+        memory[0x8000+firstadd++] = hex[(address)     & 0xf];
+      }
+      //bus_pio->txf[bus_smr] = 0xea;
+#endif
+      readFuncTable[address>>12](address);
+    }     
+  //}
+}
+
+void run_pio(void)
+{
+#ifdef CPU_6502
+    clock_pio = pio0;
+    clock_sm = 0;
+
+    // Init CLOCK SM
+    pio_sm_claim(clock_pio, clock_sm);
+    uint clock_program_offset = pio_add_program(clock_pio, &clock_program);
+    pio_sm_config cc = clock_program_get_default_config(clock_program_offset);
+    // set pin as output and set
+    //sm_config_set_out_pins(&cc, PET_CLOCK, 1);
+    sm_config_set_set_pins(&cc, PET_CLOCK, 1);
+    // Set this pin's GPIO function (connect PIO to the pad)
+    pio_gpio_init(clock_pio, PET_CLOCK);
+    // Set the pin direction to output at the PIO
+    pio_sm_set_consecutive_pindirs(clock_pio, clock_sm, PET_CLOCK, 1, true);
+    // Load our configuration, and jump to the start of the program
+    pio_sm_init(clock_pio, clock_sm, clock_program_offset, &cc);
+    pio_sm_set_clkdiv(clock_pio, clock_sm, PIO_CLK_DIV);    
+#endif
+
+  // Init PETBUS write SM
+  pio_sm_claim(bus_pio, bus_smw);
+  //pio_sm_clear_fifos(bus_pio,bus_smw);
+  uint buswrite_program_offset = pio_add_program(bus_pio, &buswrite_program);
+  pio_sm_config c = buswrite_program_get_default_config(buswrite_program_offset);
+  // map the IN pin group to the data signals
+  sm_config_set_in_pins(&c, CONFIG_PIN_BUS_DATA_BASE);
+  // map the SET pin group to the bus transceiver enable signals
+  sm_config_set_set_pins(&c, CONFIG_PIN_BUS_CONTROL_BASE, 3);
   // set the bus R/W pin as the jump pin
   sm_config_set_jmp_pin(&c, CONFIG_PIN_PETBUS_RW);
-  // map the IN pin group to the data signals
-  sm_config_set_in_pins(&c, CONFIG_PIN_PETBUS_DATA_BASE);
-  // map the SET pin group to the bus transceiver enable signals
-  sm_config_set_set_pins(&c, CONFIG_PIN_PETBUS_CONTROL_BASE, 3);
   // configure left shift into ISR & autopush every 25 bits
   sm_config_set_in_shift(&c, false, true, 24+1);
-  pio_sm_init(pio, sm, progra_offset, &c);
+  pio_sm_init(bus_pio, bus_smw, buswrite_program_offset, &c);
+  pio_sm_set_clkdiv(bus_pio, bus_smw, PIO_BUS_DIV);
 
   // configure the GPIOs
-  // Ensure all transceivers disabled and datadir is 1 (input) 
+  // Ensure all transceivers disabled (1) and datadir is 0 (input) 
+  // value,mask
   pio_sm_set_pins_with_mask(
-      pio, sm, ((uint32_t)0x7 << CONFIG_PIN_PETBUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR) , 
-               ((uint32_t)0x7 << CONFIG_PIN_PETBUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR) );
-  pio_sm_set_pindirs_with_mask(pio, sm, ((uint32_t)0x7 << CONFIG_PIN_PETBUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR),
-      ((uint32_t)0x1 << CONFIG_PIN_PETBUS_PHI2) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_RESET) | ((uint32_t)0x7 << CONFIG_PIN_PETBUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR) | ((uint32_t)0x1ff << CONFIG_PIN_PETBUS_DATA_BASE));
+      bus_pio, bus_smw, ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR) , 
+               ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR) );
+  // dir(1=out,0=in),mask
+  pio_sm_set_pindirs_with_mask(bus_pio, bus_smw, ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR),
+      ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR) | ((uint32_t)0x1ff << CONFIG_PIN_BUS_DATA_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_PHI2));
+
+  // value,mask
+  //pio_sm_set_pins_with_mask(
+  //  bus_pio, bus_smw, ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE), 
+  //           ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR)) ;
+  // dir(1=out,0=in),mask
+  //pio_sm_set_pindirs_with_mask(bus_pio, bus_smw, ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) /*| ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR)*/ ,
+  //  ((uint32_t)0x1 << CONFIG_PIN_PETBUS_PHI2) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_RW) | ((uint32_t)0xff << CONFIG_PIN_BUS_DATA_BASE) | ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) /*| ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR)*/ );
+
+  // Init PETBUS read SM
+  pio_sm_claim(bus_pio, bus_smr);
+  //pio_sm_clear_fifos(bus_pio,bus_smr);
+  uint busread_program_offset = pio_add_program(bus_pio, &busread_program);
+  pio_sm_config cread = busread_program_get_default_config(busread_program_offset);
+  // map the IN/OUT pin group to the data signals
+  sm_config_set_in_pins(&cread, CONFIG_PIN_BUS_DATA_BASE);
+  sm_config_set_out_pins(&cread, CONFIG_PIN_BUS_DATA_BASE, 8);
+  // map the SET pin group to the Data transceiver control signals (+ CS 9000/A000/E000)
+  sm_config_set_set_pins(&cread, CONFIG_PIN_PETBUS_DATADIR, 1);
+  pio_sm_init(bus_pio, bus_smr, busread_program_offset, &cread);
+  pio_sm_set_clkdiv(bus_pio, bus_smr, PIO_BUS_DIV);
+  // Set the pin direction to output at the PIO
+  pio_sm_set_consecutive_pindirs(bus_pio, bus_smr, CONFIG_PIN_BUS_DATA_BASE, 8, false);
+
+  // configure the GPIOs
+  // Ensure all transceivers disabled (1) and datadir is 0 (input)
+  // value,mask 
+  //pio_sm_set_pins_with_mask(
+  //    bus_pio, bus_smr, ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE), 
+  //             ((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) | ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR) );
+  // dir(1=out,0=in),mask
+  //pio_sm_set_pindirs_with_mask(bus_pio, bus_smr, /*((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) |*/ ((uint32_t)0x1 << CONFIG_PIN_PETBUS_DATADIR),
+  //    ((uint32_t)0x1 << CONFIG_PIN_PETBUS_PHI2)  | ((uint32_t)0xff << CONFIG_PIN_BUS_DATA_BASE) | /*((uint32_t)0x7 << CONFIG_PIN_BUS_CONTROL_BASE) |*/ ((uint32_t)0x1 << CONFIG_PIN_BUS_DATADIR) );
 
   // Disable input synchronization on input pins that are sampled at known stable times
   // to shave off two clock cycles of input latency
-  pio->input_sync_bypass |= (0x1ff << CONFIG_PIN_PETBUS_DATA_BASE);
+  bus_pio->input_sync_bypass |= (0x1ff << CONFIG_PIN_BUS_DATA_BASE);
   
-  pio_gpio_init(pio, CONFIG_PIN_PETBUS_PHI2);
-  gpio_set_pulls(CONFIG_PIN_PETBUS_PHI2, false, false);
-  pio_gpio_init(pio, CONFIG_PIN_PETBUS_RESET);
-  gpio_set_pulls(CONFIG_PIN_PETBUS_RESET, false, false);
-
-  for(int pin = CONFIG_PIN_PETBUS_CONTROL_BASE; pin < CONFIG_PIN_PETBUS_CONTROL_BASE + 3; pin++) {
-      pio_gpio_init(pio, pin);
+  // output: CONTROL and DATADIR
+  for(int pin = CONFIG_PIN_BUS_CONTROL_BASE; pin < (CONFIG_PIN_BUS_CONTROL_BASE + 3); pin++) {
+      pio_gpio_init(bus_pio, pin);
   }
-  pio_gpio_init(pio, CONFIG_PIN_PETBUS_DATADIR);
+  pio_gpio_init(bus_pio, CONFIG_PIN_PETBUS_DATADIR);
 
-  for(int pin = CONFIG_PIN_PETBUS_DATA_BASE; pin < CONFIG_PIN_PETBUS_DATA_BASE + 9; pin++) {
-      pio_gpio_init(pio, pin);
-      gpio_set_pulls(pin, false, false);
+  // input: DATA pin and RW
+  for(int pin = CONFIG_PIN_BUS_DATA_BASE; pin < (CONFIG_PIN_BUS_DATA_BASE+8+1); pin++) {
+      pio_gpio_init(bus_pio, pin);
+      gpio_set_pulls(pin, true, false);
   }
+  pio_gpio_init(bus_pio, CONFIG_PIN_PETBUS_PHI2);
+  //gpio_set_pulls(CONFIG_PIN_PETBUS_PHI2, true, false);
 
-//  pio_sm_set_enabled(pio, sm, true);
+  //pio_gpio_init(bus_pio, CONFIG_PIN_PETBUS_RESET);
+  //gpio_set_pulls(CONFIG_PIN_PETBUS_RESET, true, false);
+  
 
-  // Disable all interrupts on this core
-  /*
-  irq_set_enabled(TIMER_IRQ_0, false);
-  irq_set_enabled(TIMER_IRQ_1, false);
-  irq_set_enabled(TIMER_IRQ_2, false);
-  irq_set_enabled(TIMER_IRQ_3, false);
-  irq_set_enabled(PWM_IRQ_WRAP, false);
-  irq_set_enabled(USBCTRL_IRQ, false);
-  irq_set_enabled(XIP_IRQ, false);
-  irq_set_enabled(PIO0_IRQ_0, false);
-  irq_set_enabled(PIO0_IRQ_1, false);
-  irq_set_enabled(PIO1_IRQ_0, false);
-  irq_set_enabled(PIO1_IRQ_1, false);
-  irq_set_enabled(DMA_IRQ_0, false);
-  irq_set_enabled(DMA_IRQ_1, false);
-  irq_set_enabled(IO_IRQ_BANK0, false);
-  irq_set_enabled(IO_IRQ_QSPI , false);
-  irq_set_enabled(SIO_IRQ_PROC0, false);
-  irq_set_enabled(SIO_IRQ_PROC1, false);
-  irq_set_enabled(CLOCKS_IRQ  , false);
-  irq_set_enabled(SPI0_IRQ  , false);
-  irq_set_enabled(SPI1_IRQ  , false);
-  irq_set_enabled(UART0_IRQ , false);
-  irq_set_enabled(UART1_IRQ , false);
-  irq_set_enabled(I2C0_IRQ, false);
-  irq_set_enabled(I2C1_IRQ, false);
-  irq_set_enabled(RTC_IRQ, false);
-  */
+  // Set pio IRQ to tell us when the RX FIFO is NOT empty
+  pio_set_irq1_source_mask_enabled(bus_pio,(1u << pio_get_rx_fifo_not_empty_interrupt_source(bus_smw)), true);
+  irq_set_exclusive_handler ((bus_pio == pio0) ? PIO0_IRQ_1 : PIO1_IRQ_1, pioirq_smw );
+  irq_set_enabled((bus_pio == pio0) ? PIO0_IRQ_1 : PIO1_IRQ_1, true); // Enable the IRQ
+  
+  irq_set_priority ((bus_pio == pio0) ? PIO0_IRQ_0 : PIO1_IRQ_0, PICO_DEFAULT_IRQ_PRIORITY-64);
+  //irq_set_priority ((bus_pio == pio0) ? PIO0_IRQ_1 : PIO1_IRQ_1, PICO_DEFAULT_IRQ_PRIORITY-64);
 
-  pio_enable_sm_mask_in_sync(pio, (1 << sm) | (1 << smread));
-  pio_sm_clear_fifos(pio,sm);
-  pio_sm_clear_fifos(pio,smread);
+
+#ifdef CPU_6502
+    gpio_init(CONFIG_PET_IRQ);
+    gpio_set_dir(CONFIG_PET_IRQ, GPIO_OUT);
+    gpio_put(CONFIG_PET_IRQ, 1);
+
+
+    gpio_init(PET_RESET);
+    gpio_set_dir(PET_RESET, GPIO_OUT);
+    gpio_put(PET_RESET, 1);
+    sleep_ms(50);
+    gpio_put(PET_RESET, 0);
+    sleep_ms(500);
+    pio_sm_set_enabled(clock_pio, clock_sm, true);
+    pio_enable_sm_mask_in_sync(bus_pio, (1 << bus_smr) | (1 << bus_smw));
+    pio_sm_clear_fifos(bus_pio,bus_smr);
+    pio_sm_clear_fifos(bus_pio,bus_smw);
+    gpio_put(PET_RESET, 1);
+#else
+    pio_enable_sm_mask_in_sync(bus_pio, (1 << bus_smr) | (1 << bus_smw));
+    pio_sm_clear_fifos(bus_pio,bus_smr);
+    pio_sm_clear_fifos(bus_pio,bus_smw);
+#endif
 }
+#endif
+
+
 
 
 /********************************
  * Check for reset
 ********************************/ 
-extern bool petbus_poll_reset(void)
+#define RESET_TRESHOLD 15000
+static uint32_t reset_counter = 0;
+static bool last_reset_state = false;
+
+static bool __not_in_flash("poll_reset") poll_reset(void)
 {  
   bool retval = false;
   // low is reset => true
-  bool reset_state = !(sio_hw->gpio_in & (1 << CONFIG_PIN_PETBUS_RESET));
+  bool reset_state = !(gpio_get(PET_RESET));
+  //bool reset_state = !(sio_hw->gpio_in & (1 << PET_RESET));
   if (reset_state) {
-    if (!got_reset) {
+    if (!last_reset_state) {
       if (reset_counter < RESET_TRESHOLD) {
         reset_counter++;
-        mem[0] = mem[0] + 1; 
-      }
-      else {
-        got_reset = true;
+        memory[0x8000] = memory[0x8000] + 1;
         retval = true;
       }
     }
   }
   else {
-    got_reset = false;
     reset_counter = 0;
   }
+  last_reset_state = reset_state;
   return retval;
 }
-#endif
-
 
 static void __not_in_flash("pio_core") pio_core(void)
 {
+#ifndef CPU_EMU
+  run_pio();
+#endif  
   while(true) { 
-#ifdef CPU_EMU
     if (got_reset)
     {
       got_reset = false;
       HyperGfxReset();
+#if (defined(CPU_EMU) || defined(CPU_6502))
       sleep_ms(30);
       prev_key = 0;
+#endif
+#ifdef CPU_EMU
       pet_start();      
       pet_running = true;
+#endif
+#if (defined(CPU_EMU) || defined(CPU_6502))
       if (hyper_enabled) {
         cmdstring_pt = &petfbcmd[0];
         send_cmdstring = true;
         repeat_cnt = 0;
       }
+#endif
     }
+#ifdef CPU_EMU
     for (int i = 8; i < 408; i = i + 2) {
         hdmi_wait_line(i);
         pet_line();
     }
     pet_remaining();
-#else
-    if (got_reset)
-    {
-      got_reset = false;
-      HyperGfxReset();
-    }
-#endif 
+#endif
     __dmb();
   }
 }
@@ -912,7 +1009,7 @@ void start_system(void)
 {
   hyper_enabled = true;
 
-#ifdef CPU_EMU
+#if (defined(CPU_EMU) || defined(CPU_6502))
 #ifdef HAS_USBHOST
   //board_init();
   tuh_init(BOARD_TUH_RHPORT);
@@ -934,31 +1031,53 @@ void start_system(void)
   if (hyper_enabled) {
     // A000 area content is file browser default
 #ifdef PETIO_A000
-    memcpy((void *)&mem_a000[0], (void *)fb, sizeof(fb));
-//  memcpy((void *)&mem_a000[0], (void *)vsync, sizeof(vsync));
+    memcpy((void *)&memory[0xa000], (void *)fb, sizeof(fb));
 #endif 
   }
+  memcpy((void *)&memory[0xb000], (void *)basic4_b000, sizeof(basic4_b000));
+  memcpy((void *)&memory[0xc000], (void *)basic4_c000, sizeof(basic4_c000));
+  memcpy((void *)&memory[0xd000], (void *)basic4_d000, sizeof(basic4_d000));
+#ifdef PETIO_EDIT  
+  if (HyperGfxIsPal()) { 
+    if (!HyperGfxIsHires())      
+      memcpy((void *)&memory[0xe000], (void *)edit450, sizeof(edit450));
+    else
+      memcpy((void *)&memory[0xe000], (void *)edit48050, sizeof(edit48050));
+  } 
+  else {
+    if (!HyperGfxIsHires())      
+      memcpy((void *)&memory[0xe000], (void *)edit4, sizeof(edit4));
+    else
+      memcpy((void *)&memory[0xe000], (void *)edit480, sizeof(edit480));
+  }    
+#endif  
+  memcpy((void *)&memory[0xf000], (void *)kernal4, sizeof(kernal4));
 
-
-#ifdef CPU_EMU
   pet_start(); 
   multicore_launch_core1(pio_core);
-
+  // Configure RESET as input pin now!
+#ifndef CPU_6502
+  gpio_init(PET_RESET);
 #else
-  multicore_launch_core1(pio_core);
-#ifdef BUS_DEBUG
-  memptr = 0;
-  memptw = 0;
+  // wait for pio reset finished
+  sleep_ms(600);
 #endif
-#endif
+  gpio_set_dir(PET_RESET, GPIO_IN);
+  gpio_set_pulls(PET_RESET, false, false);
 
-  while(true) {
-    HyperGfxHandleGfx();    
-#ifdef BUS_DEBUG
-    DebugShow();    
+
+  while(true) {    
+    HyperGfxHandleGfx();
+#ifdef CPU_6502     
+    gpio_put(CONFIG_PET_IRQ, 0);
+    sleep_us(5);
+    gpio_put(CONFIG_PET_IRQ, 1);
 #endif
     HyperGfxHandleCmdQueue();
-#if (defined(CPU_EMU) || defined(CPU_Z80))
+    if (got_reset == false) {
+      got_reset = poll_reset();
+    }
+#if (defined(CPU_EMU) || defined(CPU_6502))
 #ifdef HAS_USBHOST
     // tinyusb host task
     tuh_task();

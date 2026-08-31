@@ -26,11 +26,20 @@ extern "C" {
 
 #ifdef PET
 #include "petfont.h"
+#include "memory.h"
 #endif
 #ifdef TRS
 #include "font/font_m3"
 #include "font/font_m4"
 #include "trs_memory.h"
+#endif
+#ifdef AQUA
+#include "aquafont.h"
+#include "memory.h"
+#endif
+#ifdef ORIC
+#include "oricfont.h"
+#include "memory.h"
 #endif
 
 #ifdef HAS_USBHOST
@@ -85,6 +94,7 @@ bool hyper_enabled = true;
 // Screen resolution
 static uint8_t video_default = VMODE_HIRES;
 static int video_mode;
+static int cur_scanline;
 
 // Frame buffer
 static ALIGNED uint8_t Bitmap[LO_XRES*MAXHEIGHT+GFX_MARGIN];
@@ -123,11 +133,16 @@ static uint8_t font[FONT_SIZE];
 
 // GFX shadow memory 8000-9fff
 #ifdef PET
-static unsigned char mem_io[0x2000];
-static unsigned char *gfxmem=&mem_io[0];
+static unsigned char *gfxmem=&memory[0x8000];
 #endif
 #ifdef TRS
 static unsigned char *gfxmem=&memory[0xe000];
+#endif
+#ifdef AQUA
+static unsigned char *gfxmem=&memory[0xe000];
+#endif
+#ifdef ORIC
+static unsigned char *gfxmem=&memory[0x8000];
 #endif
 
 #ifdef PET
@@ -136,6 +151,17 @@ bool font_lowercase = false;
 #ifdef TRS
 bool font_reversed = false;
 #endif
+
+#ifdef AQUA
+static uint8_t aqua_palette[16] = {
+   VGA_RGB(0x10,0x10,0x10), VGA_RGB(0xf7,0x10,0x10), VGA_RGB(0x10,0xf7,0x10), VGA_RGB(0xf7,0xef,0x10),
+   VGA_RGB(0x21,0x21,0xde), VGA_RGB(0xf7,0x10,0xf7), VGA_RGB(0x31,0xc6,0xc6), VGA_RGB(0xf7,0xf7,0xf7),
+   VGA_RGB(0xc6,0xc6,0xc6), VGA_RGB(0x29,0xad,0xad), VGA_RGB(0xc6,0x21,0xc6), VGA_RGB(0x42,0x10,0x8c),
+   VGA_RGB(0xf7,0xf7,0x73), VGA_RGB(0x21,0xce,0x42), VGA_RGB(0xad,0x21,0x21), VGA_RGB(0x31,0x31,0x31)
+};
+static  uint16_t aqua_lut[256];
+#endif
+
 static uint16_t screen_width = 640;
 static bool gfx_reset = false; 
 
@@ -274,11 +300,20 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
 #endif
 #ifdef TRS
     uint8_t fgcolor = 0xff;
-    int screen_width_in_chars = 64; //screen_width >> 3;{ 
+    int screen_width_in_chars = 64; 
     unsigned char * charpt = &memory[VIDEO_START + (scanline/12)*screen_width_in_chars];    
     unsigned char * fontpt = &font[(scanline%12)*256+(font_reversed?0x800:0x000)];
     TextBlitKey64(linebuffer+64, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
 #endif 
+#ifdef AQUA
+    uint8_t fgcolor = 0xff;
+    int screen_width_in_chars = 40;
+    unsigned char * charpt = &memory[VIDEO_START + (scanline/8)*screen_width_in_chars];    
+    unsigned char * fontpt = &font[(scanline%8)*256];
+    TextBlit40(linebuffer, (scroll>>3)%40, screen_width_in_chars, (uint8_t *)aqua_lut, fontpt, scroll&7, charpt, charpt+0x400);          
+#endif
+#ifdef ORIC
+#endif
   }
   else {
     // Curtain V
@@ -328,7 +363,7 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
         }
         else
         {
-  #ifdef PET   
+#ifdef PET   
           uint8_t fgcolor = GET_FG_COL;
           int screen_width_in_chars = screen_width >> 3;
           unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
@@ -344,15 +379,25 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
     //        TextBlit80(linebuffer, charpt, screen_width_in_chars/2, &fgcolorlut[0], fontpt, scroll&7, (scroll>>3)%40);          
             TextBlitKey80(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
           }
-  #endif
-  #ifdef TRS
+#endif
+#ifdef TRS
           uint8_t fgcolor = GET_FG_COL;
-          int screen_width_in_chars = 64; //screen_width >> 3;{ 
+          int screen_width_in_chars = 64;
           unsigned char * charpt = &memory[VIDEO_START + (scanline/12)*screen_width_in_chars];    
           unsigned char * fontpt = &font[(scanline%12)*256+(font_reversed?0x800:0x000)];
           int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
           TextBlitKey64(linebuffer+64, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
-  #endif        
+#endif        
+#ifdef AQUA
+          uint8_t fgcolor = GET_FG_COL;
+          int screen_width_in_chars = 40;
+          unsigned char * charpt = &memory[VIDEO_START + (scanline/8)*screen_width_in_chars];    
+          unsigned char * fontpt = &font[(scanline%8)*256];
+          int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
+          TextBlit40(linebuffer, (scroll>>3)%40, screen_width_in_chars, (uint8_t *)aqua_lut, fontpt, scroll&7, charpt, charpt+0x400);          
+#endif
+#ifdef ORIC
+#endif
         }
       } 
 
@@ -572,6 +617,24 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                     gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
                   }
   #endif
+  #ifdef AQUA
+                  if ( (size > 4) && 
+                       (filename[size-5] == '.' ) && 
+                       (filename[size-4] == 'p' ) && 
+                       (filename[size-3] == 'r' ) && 
+                       (filename[size-2] == 'g' ) ) {
+                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  }
+  #endif
+  #ifdef ORIC
+                  if ( (size > 4) && 
+                       (filename[size-5] == '.' ) && 
+                       (filename[size-4] == 'p' ) && 
+                       (filename[size-3] == 'r' ) && 
+                       (filename[size-2] == 'g' ) ) {
+                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  }
+  #endif
                   else {
                     valid = false;
                   }
@@ -605,7 +668,7 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
               if (entry.fname[0] != '.' ) { // skip any MACOS file but also ".", ".."
                 // not a directory
                 if ( !(entry.fattrib & AM_DIR) ) {
-  #ifdef PET
+#ifdef PET
                   if ( (size > 4) && 
                        (filename[size-5] == '.' ) && 
                        (filename[size-4] == 'p' ) && 
@@ -621,8 +684,8 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                        (filename[size-2] == 'n' ) ) {
                     gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
                   }
-  #endif
-  #ifdef TRS
+#endif
+#ifdef TRS
                   if ( (size > 4) && 
                        (filename[size-5] == '.' ) && 
                        (filename[size-4] == 'c' ) && 
@@ -630,7 +693,25 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
                        (filename[size-2] == 'd' ) ) {
                     gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
                   }
-  #endif
+#endif
+#ifdef AQUA
+                  if ( (size > 4) && 
+                       (filename[size-5] == '.' ) && 
+                       (filename[size-4] == 'p' ) && 
+                       (filename[size-3] == 'r' ) && 
+                       (filename[size-2] == 'g' ) ) {
+                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  }
+#endif
+#ifdef ORIC
+                  if ( (size > 4) && 
+                       (filename[size-5] == '.' ) && 
+                       (filename[size-4] == 'p' ) && 
+                       (filename[size-3] == 'r' ) && 
+                       (filename[size-2] == 'g' ) ) {
+                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                  }
+#endif
                   else {
                     valid = false;
                   }
@@ -774,6 +855,9 @@ static void __not_in_flash("traParamFuncFont") traParamFuncFont(void) {
 #endif
 #ifdef TRS
   tra_address = &font[(font_reversed?0x800:0x000)];
+#endif
+#ifdef AQUA
+  tra_address = &font[0x000];
 #endif
   cmd_tra_depth = 0; // 1 byte to 1 byte (1bit data, 8 pixels at a time)
 }
@@ -919,6 +1003,12 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t val
 #ifdef TRS
     switch (address-0xe000) 
 #endif
+#ifdef AQUA
+    switch (address-0xe000) 
+#endif
+#ifdef ORIC  
+    switch (address-0x8000) 
+#endif
     {  
       case REG_TDEPTH:
         cmd_tra_depth = value&0x0f;
@@ -963,6 +1053,12 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t val
 #ifdef TRS
         gfxmem[address-0xe000] = value;
 #endif
+#ifdef AQUA
+        gfxmem[address-0xe000] = value;
+#endif
+#ifdef ORIC
+        gfxmem[address-0x8000] = value;
+#endif
         break;
     }
   }
@@ -973,6 +1069,12 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t val
 #ifdef TRS
     gfxmem[address-0xe000] = value;
 #endif
+#ifdef AQUA
+    gfxmem[address-0xe000] = value;
+#endif
+#ifdef ORIC
+    gfxmem[address-0x8000] = value;
+#endif
   }     
 }
 
@@ -982,6 +1084,12 @@ uint8_t __not_in_flash("HyperGfxread") HyperGfxRead(uint16_t address) {
 #endif
 #ifdef TRS
   return gfxmem[address-0xe000];;
+#endif
+#ifdef AQUA
+  return gfxmem[address-0xe000];;
+#endif
+#ifdef ORIC
+  return gfxmem[address-0x8000];
 #endif
 }
 
@@ -1131,6 +1239,12 @@ void __not_in_flash("VideoRenderUpdate") VideoRenderUpdate(void)
 
 void __not_in_flash("HyperGfxInit") HyperGfxInit(void) 
 {
+#ifdef AQUA
+    for (int i = 0; i < 256; i++)
+    {
+      aqua_lut[i] = (aqua_palette[i>>4]<<8) + aqua_palette[i&0xf];
+    }
+#endif  
   if (hyper_enabled) {
 #ifdef HAS_SND
     if (!sid_initialized) {
@@ -1161,6 +1275,14 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
     // all registers and videomem
     memset((void*)&memory[0x3c00], 0, 0x0400);  
     //memset((void*)&gfxmem[REG_TILEMAP_L1], 0, 0x2000-REG_TILEMAP_L1); 
+    SET_BG_COL(VGA_RGB(0x00,0x20,0x00));
+    SET_FG_COL(VGA_RGB(0xc0,0xc0,0x70));
+#endif  
+#ifdef AQUA
+    SET_BG_COL(VGA_RGB(0x00,0x20,0x00));
+    SET_FG_COL(VGA_RGB(0xc0,0xc0,0x70));
+#endif  
+#ifdef ORIC
     SET_BG_COL(VGA_RGB(0x00,0x20,0x00));
     SET_FG_COL(VGA_RGB(0xc0,0xc0,0x70));
 #endif  
@@ -1207,7 +1329,17 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
     }  
   }
   else {
-    //memset((void*)&gfxmem[0x0000], 0, 0x2000); // all registers and videomem  
+    // no hyper GFX, set default GFXmode
+    int vmode = 0;
+    if (video_default == VMODE_LORES) {
+      vmode = 1;
+    } 
+    if (video_mode != vmode) {
+      if (vmode == 0) {hdmi_init(MODE_VGA_640x240);screen_width=640;}  
+      else if (vmode == 1) {hdmi_init(MODE_VGA_320x240);screen_width=320;} 
+      else {hdmi_init(MODE_VGA_256x240);screen_width=256;}
+      video_mode = vmode;
+    }
   }
 
 #ifdef PET
@@ -1218,6 +1350,14 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
   int cheight = 12;
   uint8_t* src=(uint8_t*)&font_m3[0x0000];
 #endif  
+#ifdef AQUA
+  int cheight = 8;
+  uint8_t* src=(uint8_t*)&aquafont[0x0000];
+#endif  
+#ifdef ORIC
+  int cheight = 8;
+  uint8_t* src=(uint8_t*)&oricfont[0x0000];
+#endif  
   uint8_t* dst=font;
   for (int j=0; j<cheight; j++) {
     for (int i=0; i<256; i++) {
@@ -1226,20 +1366,12 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
   }
 #ifdef PET
   src=(uint8_t*)&petfont[0x0800];
-#endif
-#ifdef TRS
-  src=(uint8_t*)&font_m3[0x0000];
-#endif  
   for (int j=0; j<cheight; j++) {
     for (int i=0; i<256; i++) {
-#ifdef PET
       *dst++ = src[i*cheight+j];
-#endif
-#ifdef TRS
-//      *dst++ = ~src[i*cheight+j];
-#endif
     }
   }
+#endif
 }
 
 void HyperGfxFlashFSInit(void)
@@ -1268,7 +1400,7 @@ void HyperGfxFlashFSInit(void)
         else 
         if (!strncmp(scratchpad, "ram=", 4)) {
         }
-#ifndef HAS_PETIO
+#if (defined(CPU_EMU) || defined(CPU_6502))
         else 
         if (!strncmp(scratchpad, "keyboard=", 9)) {
 #ifdef HAS_USBHOST          
@@ -1315,6 +1447,14 @@ void HyperGfxFlashFSInit(void)
 #endif
 #endif
   }
+#ifdef AQUA
+  video_default = VMODE_LORES;
+  screen_width=320;
+#endif
+#ifdef ORIC
+  video_default = VMODE_LORES;
+  screen_width=320;
+#endif
 }
 
 void __not_in_flash("HyperGfxReset") HyperGfxReset(void)
@@ -1332,6 +1472,7 @@ void __not_in_flash("HyperGfxHandleGfx") HyperGfxHandleGfx(void)
       if (hyper_enabled) {     
         gfxmem[REG_VSYNC] = scanline;
       }
+      cur_scanline = scanline;
       VideoRenderLineBG(linebuffer, scanline);            
       VideoRenderLineL0(linebuffer, scanline);
 #ifdef TRS             
@@ -1343,6 +1484,7 @@ void __not_in_flash("HyperGfxHandleGfx") HyperGfxHandleGfx(void)
   if (hyper_enabled) {     
     gfxmem[REG_VSYNC] = MAXHEIGHT;
   }
+  cur_scanline = MAXHEIGHT;
   if (gfx_reset) {
     gfx_reset = false;
     HyperGfxInit();
@@ -1365,5 +1507,9 @@ bool HyperGfxIsHires(void) {
 
 bool HyperGfxIsPal(void) {
   return (gfxmem[REG_PALNTSC] == 0);   
+}
+
+bool HyperGfxIsVsync(void) {
+  return (cur_scanline == MAXHEIGHT);
 }
 

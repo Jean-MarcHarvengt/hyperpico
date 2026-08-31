@@ -9,25 +9,39 @@
 
 //#####################################################
 // Clock
-#define TRS_CLOCK              27  // Z80 clock output
-#define CONFIG_PIN_BUS_IOOUT   27  // OR IO OUT on TRS80 real system (PET VOUT)
+#define TRS_CLOCK              27  // Z80 clock output on Z80 CPU standalone
+#define CONFIG_PIN_BUS_IOOUT   27  // OR IO OUT on TRS80 real system 
 #define HYPERGFX_ENA_INPUT     27  // on real TRS80 MODEL III !
+#define PET_CLOCK              27  // 6502 clock output on 6502 CPU standalone (PET VOUT on real system = unused)
 
 
 // Reset
-#define TRS_RESET              28  //( PET VIN)
+#define TRS_RESET              28
+#define PET_RESET              28  //( PET VIN on real system)
+
+
 
 // Bus PIO config
 #define CONFIG_PIN_BUS_DATA_BASE 0 /* 8 pins */
 #define CONFIG_PIN_BUS_CONTROL_BASE (CONFIG_PIN_BUS_DATA_BASE + 9) //DATA,ADDRLO,ADDRHI
 
-//#define CONFIG_PIN_BUS_RD      8  Z80/TRS80 RD //(PET INPUT RW) 
-//#define CONFIG_PIN_BUS_WR      26 Z80/TRS80 WR //(PET INPUT PHI2)
-#define CONFIG_PIN_BUS_DATADIR 22 //(PET INPUT RESET)
+
+// Z80/TRS80
+//#define CONFIG_PIN_BUS_RD      8  Z80/TRS80 RD input
+//#define CONFIG_PIN_BUS_WR      26 Z80/TRS80 WR input
+// 6502/PET
+//#define CONFIG_PIN_BUS_RW      8  6502/PET RW input
+//#define PET_CLOCK_IN           26 6502/PET PHI2_GPIO input
+
+#define CONFIG_PIN_BUS_DATADIR 22 //(PET INPUT RESET obsolete)
+
 
 
 #define CONFIG_PIN_BUS_IOREQ   20 // Z80 IOREQ input (PET UNUSED)
 #define CONFIG_PIN_BUS_IOIN    20 // OR IO IN input on TRS80 real system
+#define CONFIG_PET_IRQ         20 // OR PET_IRQ output to 6502 CPU standalone
+
+
 
 // Speaker
 #define AUDIO_PIN       21

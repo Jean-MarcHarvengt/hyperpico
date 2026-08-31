@@ -32,6 +32,6 @@ extern uint8_t HyperGfxRead(uint16_t address);
 extern void HyperGfxVsync(void);
 extern bool HyperGfxIsHires(void);
 extern bool HyperGfxIsPal(void);
-
+extern bool HyperGfxIsVsync(void);
 
 #endif

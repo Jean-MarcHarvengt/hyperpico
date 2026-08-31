@@ -35,10 +35,12 @@ extern "C" void TextBlitKey80(uint8_t* dst, uint8_t* src, int w, uint8_t fgcolor
 //  fgcolorlut:	fgcolor 4bits lookup table
 //  fontdef:	font definition
 //  scroll:		scrollx
-extern "C" void TextBlit32(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
-extern "C" void TextBlit40(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
-extern "C" void TextBlit64(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
-extern "C" void TextBlit80(uint8_t* dst, uint8_t* src, int w, uint8_t * fgcolorlut, uint8_t* fontdef, int scroll, int offset);
+extern "C" void TextBlit32(uint8_t* dst, int offset, int w, uint8_t * lut, uint8_t* fontdef, int scroll, uint8_t* src_chr, uint8_t* src_col);
+extern "C" void TextBlit40(uint8_t* dst, int offset, int w, uint8_t * lut, uint8_t* fontdef, int scroll, uint8_t* src_chr, uint8_t* src_col);
+extern "C" void TextBlit64(uint8_t* dst, int offset, int w, uint8_t * lut, uint8_t* fontdef, int scroll, uint8_t* src_chr, uint8_t* src_col);
+extern "C" void TextBlit80(uint8_t* dst, int offset, int w, uint8_t * lut, uint8_t* fontdef, int scroll, uint8_t* src_chr, uint8_t* src_col);
+
+
 
 
 // Blit scanline using 8x8 or 16x16 tile (+ bgcolor)

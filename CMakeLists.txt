@@ -6,8 +6,10 @@ include(pico_sdk_import.cmake)
 # We also need PICO EXTRAS
 #include(pico_extras_import.cmake)
 
-set(TARGET hypertrspico)
-#set(TARGET hyperpetpico)
+#set(TARGET hypertrspico)
+set(TARGET hyperpetpico)
+#set(TARGET hyperaquapico)
+#set(TARGET hyperoricpico)
 
 project(${TARGET} C CXX)
 
@@ -33,6 +35,12 @@ endif()
 if( ${TARGET} MATCHES "hyperpetpico" )
 include_directories(pet)
 endif()
+if( ${TARGET} MATCHES "hyperaquapico" )
+include_directories(aquarius)
+endif()
+if( ${TARGET} MATCHES "hyperoricpico" )
+include_directories(oric)
+endif()
 include_directories(.)
 
 set(DISPLAY_SOURCES 	
@@ -43,6 +51,7 @@ set(GFXRENDER_SOURCES
 		gfx/gfx_tile8.S
 		gfx/gfx_tile16.S
 		gfx/gfx_text8.S
+		gfx/gfx_textbi8.S
 		gfx/gfx_sprite16.S
 		gfx/gfx_color.S
 		gfx/hypergfx.cpp
@@ -98,6 +107,24 @@ set(MAIN_SOURCES
 	)
 endif()
 
+if( ${TARGET} MATCHES "hyperaquapico" )
+set(MAIN_SOURCES
+		main.cpp
+		aquarius/z80.cpp
+		aquarius/memmap.cpp
+		aquarius/memory.cpp
+	)
+endif()
+
+if( ${TARGET} MATCHES "hyperoricpico" )
+set(MAIN_SOURCES
+		main.cpp
+		oric/memmap.cpp
+		#oric/z80.cpp
+		#oric/memory.cpp
+	)
+endif()
+
 
 add_executable(${TARGET}
 		${DISPLAY_SOURCES}
@@ -140,14 +167,32 @@ pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/trs80/busreadwrite.
 endif()
 
 if( ${TARGET} MATCHES "hyperpetpico" )
-pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/pet/petbus.pio)
+pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/pet/clock.pio)
+pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/pet/busreadwrite.pio)
 endif()
+
+if( ${TARGET} MATCHES "hyperaquapico" )
+pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/aquarius/clock.pio)
+pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/aquarius/busreadwrite.pio)
+endif()
+
+if( ${TARGET} MATCHES "hyperoricpico" )
+#pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/oric/bus.pio)
+#pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/oric/clock.pio)
+endif()
+
 
 if( ${TARGET} MATCHES "hypertrspico" )
 target_compile_options(${TARGET} PUBLIC -DTRS)
 endif()
 if( ${TARGET} MATCHES "hyperpetpico" )
 target_compile_options(${TARGET} PUBLIC -DPET)
+endif()
+if( ${TARGET} MATCHES "hyperaquapico" )
+target_compile_options(${TARGET} PUBLIC -DAQUA)
+endif()
+if( ${TARGET} MATCHES "hyperoricpico" )
+target_compile_options(${TARGET} PUBLIC -DORIC)
 endif()
 
 

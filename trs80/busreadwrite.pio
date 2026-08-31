@@ -1,7 +1,7 @@
 
 .define public CONFIG_PIN_BUS_RD 8
 .define public CONFIG_PIN_BUS_WR 26
-;.define public RESET 28
+
 
 .program busread
 .side_set 1

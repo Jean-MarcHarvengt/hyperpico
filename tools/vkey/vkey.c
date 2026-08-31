@@ -304,6 +304,79 @@ static void run_command(char * cmd) {
             fclose(fp_rd);
         }
     }
+    else if (!strncmp(cmd,"lrom ",5) ) 
+    {
+        if (strlen(cmd) > 5) {
+            FILE *fp_rd;
+            if ((fp_rd = fopen (&cmd[5], "rb")) == NULL)
+            {
+                move(y_cmdline-2, 0);
+                clrtoeol();               
+                printw("can not open cmd file %s\n", &cmd[5]);
+                return;      
+            }
+
+            fseek(fp_rd, 0L, SEEK_END);
+            int size = ftell(fp_rd);
+            fseek(fp_rd, 0L, SEEK_SET);
+            if (size > 0x4000) {
+                move(y_cmdline-2, 0);
+                clrtoeol();               
+                printw("rom %s is too big!\n", &cmd[5]);
+                fclose(fp_rd);
+                return;
+            }
+
+            if (fread(&filebuffer[0], 1, size, fp_rd) != size) {
+                move(y_cmdline-2, 0);
+                clrtoeol();               
+                printw("error rom program %s\n", &cmd[5]);
+                fclose(fp_rd);
+                return;
+            }
+            fclose(fp_rd);
+            move(y_cmdline-2, 0);
+            clrtoeol();               
+            printw("sending rm %s, %d bytes\n", &cmd[5], size);
+
+
+            unsigned int code=0;
+            for (int i=3;i<=15;i++) {
+                code += filebuffer[i];
+                code += i;
+            }
+            
+            unsigned char xcode = (unsigned char)(code - (code/256));
+            xcode ^= filebuffer[15];
+            for (int i=0;i<(size-16);i++) {
+                filebuffer[i+16] ^= xcode;
+            }
+
+            int remaining = size;
+            int fpos = 0;
+            int addr = 0xc000;
+            while (remaining > 0) {
+                int tosend = MIN(MAX_PACKET-3,remaining);
+                txbuffer[1]=addr >> 8;
+                txbuffer[2]=addr & 0xff;
+                memcpy((void*)&txbuffer[3],(void*)&filebuffer[fpos],tosend);
+                txbuffer[0] = sercmd_prg;
+                send_packet(&txbuffer[0], tosend+3); 
+                receive_packet();
+                move(y_cmdline-2, 0);
+                clrtoeol();               
+                printw("sent %d bytes\n", fpos);
+                refresh();
+                fpos += tosend;
+                addr+=tosend;
+                remaining -= tosend;
+            }
+            //move(y_cmdline-2, 0);
+            //clrtoeol();               
+            //printw("program sent\n");
+            fclose(fp_rd);
+        }
+    }
     else 
     {
         move(y_cmdline-2, 0);
@@ -486,8 +559,9 @@ int main(void) {
     printw("\n");
     printw("File mode commands:\n");
     printw("  2cmd <file.bin> = convert bin to cmd\n");
-    printw("  lprg <file.prg> = inject prg program\n");
-    printw("  lcmd <file.cmd> = inject cmd program\n");
+    printw("  lprg <file.prg> = inject prg program (PET)\n");
+    printw("  lcmd <file.cmd> = inject cmd program (TRS)\n");
+    printw("  lrom <file.cmd> = inject cmd program (AQUA)\n");
     printw("  run             = run prg program\n");
     printw("  reset           = reset system\n");
     printw("\n");
