@@ -7,9 +7,9 @@ include(pico_sdk_import.cmake)
 #include(pico_extras_import.cmake)
 
 #set(TARGET hypertrspico)
-set(TARGET hyperpetpico)
+#set(TARGET hyperpetpico)
 #set(TARGET hyperaquapico)
-#set(TARGET hyperoricpico)
+set(TARGET hyperoricpico)
 
 project(${TARGET} C CXX)
 
@@ -120,8 +120,8 @@ if( ${TARGET} MATCHES "hyperoricpico" )
 set(MAIN_SOURCES
 		main.cpp
 		oric/memmap.cpp
-		#oric/z80.cpp
-		#oric/memory.cpp
+		oric/mos6502.cpp
+		oric/vrEmu6522.cpp
 	)
 endif()
 
@@ -177,8 +177,8 @@ pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/aquarius/busreadwri
 endif()
 
 if( ${TARGET} MATCHES "hyperoricpico" )
-#pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/oric/bus.pio)
-#pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/oric/clock.pio)
+pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/oric/clock.pio)
+pico_generate_pio_header(${TARGET} ${CMAKE_CURRENT_LIST_DIR}/oric/busreadwrite.pio)
 endif()
 
 

@@ -1,0 +1,134 @@
+!to "joytest.tap"
+
+VIA_PORTA  = $0301
+VIA_DDRA   = $0303
+
+*= $0ff0
+
+!byte $16
+!byte $16
+!byte $16
+!byte $16
+!byte $24
+
+!byte $00
+!byte $00
+
+!byte $80 ; type
+!byte $c7 ; autorun
+!byte >prgend
+!byte <prgend
+!byte >prgstart
+!byte <prgstart
+!byte $00
+
+!byte $41
+!byte $00
+
+*= $1000
+prgstart:
+
+
+        LDA #%11000000      
+        STA VIA_DDRA        ; Port A bits 0-5 are now inputs
+
+        ; 2. READ LEFT JOYSTICK
+        ; Drop Bit 7 low to select the Left Joystick, keep Bit 6 high
+        LDA #%01111111      
+        STA VIA_PORTA       
+        NOP                 ; Micro-delay for lines to stabilize
+        NOP
+        LDA VIA_PORTA       ; Read data lines (lower 5 bits hold directions)
+        AND #%00011111      ; Mask out selection bits
+        STA JOY_LEFT_RESULT ; Store state (Active-low: 0 means pressed)
+
+        ; 3. READ RIGHT JOYSTICK
+        ; Drop Bit 6 low to select the Right Joystick, keep Bit 7 high
+        LDA #%10111111      
+        STA VIA_PORTA       
+        NOP                 ; Micro-delay
+        NOP
+        LDA VIA_PORTA       ; Read data lines
+        AND #%00011111      ; Mask out selection bits
+        STA JOY_RIGHT_RESULT; Store state
+
+
+        ; 4. RESTORE VIA FOR SYSTEM STABILITY
+        ; Reconfigure Port A entirely as an output port (Oric system default)
+        LDA #%11111111      
+        STA VIA_DDRA 
+
+        lda #$20
+        sta $BB94
+        sta $BB95
+        sta $BB96
+        sta $BB97
+
+        LDA  JOY_LEFT_RESULT
+        AND #%00000001
+        BNE  joy0    
+        lda #$41
+        sta $BB94
+joy0:
+        LDA  JOY_LEFT_RESULT
+        AND #%00000010
+        BNE  joy1    
+        lda #$41
+        sta $BB95
+joy1:
+        LDA  JOY_LEFT_RESULT
+        AND #%00010000
+        BNE  joy2    
+        lda #$41
+        sta $BB96
+joy2:
+        LDA  JOY_LEFT_RESULT
+        AND #%00001000
+        BNE  joy3    
+        lda #$41
+        sta $BB97
+joy3:
+
+
+        lda #$20
+        sta $BB98
+        sta $BB99
+        sta $BB9a
+        sta $BB9b
+
+        LDA  JOY_RIGHT_RESULT
+        AND #%00000001
+        BNE  joy4    
+        lda #$41
+        sta $BB98
+joy4:
+        LDA  JOY_RIGHT_RESULT
+        AND #%00000010
+        BNE  joy5    
+        lda #$41
+        sta $BB99
+joy5:
+        LDA  JOY_RIGHT_RESULT
+        AND #%00010000
+        BNE  joy6    
+        lda #$41
+        sta $BB9a
+joy6:
+        LDA  JOY_RIGHT_RESULT
+        AND #%00001000
+        BNE  joy7    
+        lda #$41
+        sta $BB9b
+joy7:
+
+
+        jmp prgstart
+
+        rts
+
+JOY_LEFT_RESULT:!byte $00 
+JOY_RIGHT_RESULT!byte $00
+
+prgend:
+!byte $00
+

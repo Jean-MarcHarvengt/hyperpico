@@ -17,7 +17,7 @@
 #define USB_DIR_OUT 0x00u
 #define USB_DIR_IN 0x80u
 
-#define MAX_FILESIZE 0x8000
+#define MAX_FILESIZE 0x10000
 
 #define MAX(x, y) (((x) > (y)) ? (x) : (y))
 #define MIN(x, y) (((x) < (y)) ? (x) : (y))
@@ -377,6 +377,155 @@ static void run_command(char * cmd) {
             fclose(fp_rd);
         }
     }
+    else if (!strncmp(cmd,"ltap ",5) ) 
+    {
+        if (strlen(cmd) > 5) {
+            FILE *fp_rd;
+            if ((fp_rd = fopen (&cmd[5], "rb")) == NULL)
+            {
+                move(y_cmdline-2, 0);
+                clrtoeol();               
+                printw("can not open tap file %s\n", &cmd[5]);
+                return;      
+            }
+
+            fseek(fp_rd, 0L, SEEK_END);
+            int size = ftell(fp_rd);
+            fseek(fp_rd, 0L, SEEK_SET);
+            int endaddr = 0;
+
+            while (size > 0) {            
+                int byte;
+                int leader_count = 0;
+
+                // 1. Zoek naar de synchronisatiebytes (0x16) en de sync marker (0x24)
+                while ((byte = fgetc(fp_rd)) != EOF) {
+                    if (byte == 0x16) {
+                        leader_count++;
+                    } else if (byte == 0x24) {
+                        size--;
+                        break; // Sync marker gevonden, de header begint hierna
+                    } else {
+                        leader_count = 0; // Reset als er valse bytes tussen zitten
+                    }
+                    size--;
+                }
+
+                if (byte == EOF) {
+                    move(y_cmdline-2, 0);
+                    clrtoeol();               
+                    printw("error tap program\n");
+                    fclose(fp_rd);
+                    return;
+                }
+
+
+                unsigned char header[9];
+                if (fread(header, 1, 9, fp_rd) != 9) {
+                    move(y_cmdline-2, 0);
+                    clrtoeol();               
+                    printw("error tap bad header \n");
+                    fclose(fp_rd);
+                    return;
+                }
+                unsigned char  type = header[2];
+                unsigned char autorun = header[3];
+                unsigned short end_addr = (header[4] << 8) | header[5];
+                unsigned short start_addr = (header[6] << 8) | header[7];
+                long data_size = end_addr - start_addr + 1;
+                size -= 9;
+
+                char name[18];
+                int i = 0;
+                while (i < 17) {
+                    byte = fgetc(fp_rd);
+                    if (byte == EOF) {
+                        move(y_cmdline-2, 0);
+                        clrtoeol();               
+                        printw("error tap bad name\n");
+                        fclose(fp_rd);
+                        return;
+                    }
+                    name[i] = (char)byte;
+                    i++;
+                    if (byte == 0x00) {
+                        break;
+                    }                    
+                }
+                size -= i;
+                
+                //printf("--- Oric TAP Header Info ---\n");
+                //printf("Name    : %s\n", (i == 0) ? "[none]" : name);
+                //printf("Type    : 0x%02X (%s)\n", type, (type == 0x80) ? "BASIC" : "Machine / Data");
+                //printf("Autorun : %s\n", (autorun == 0x01) ? "yes" : "no");
+                //printf("Start   : %04X\n", start_addr);
+                //printf("End     : %04X\n", end_addr);
+                //printf("datasize: %ld bytes\n", data_size);
+                //printf("----------------------------\n");
+                    
+
+                size -= data_size;
+
+                if (fread(&filebuffer[0], 1, data_size, fp_rd) != data_size) {
+                        move(y_cmdline-2, 0);
+                        clrtoeol();               
+                        printw("data block error\n");
+                        fclose(fp_rd);
+                        return;           
+                }
+
+
+                int remaining = data_size;
+                int fpos = 0;
+                int addr = start_addr;
+                while (remaining > 0) {
+                    int tosend = MIN(MAX_PACKET-3,remaining);
+                    txbuffer[1]=addr >> 8;
+                    txbuffer[2]=addr & 0xff;
+                    memcpy((void*)&txbuffer[3],(void*)&filebuffer[fpos],tosend);
+                    txbuffer[0] = sercmd_prg;
+                    send_packet(&txbuffer[0], tosend+3); 
+                    receive_packet();
+                    move(y_cmdline-2, 0);
+                    clrtoeol();               
+                    printw("sent %d bytes\n", fpos);
+                    refresh();
+                    fpos += tosend;
+                    addr+=tosend;
+                    endaddr = addr;
+                    remaining -= tosend;
+                }
+
+
+                int tosend = MIN(MAX_PACKET-3,2);
+                txbuffer[0] = sercmd_prg;
+                txbuffer[1]= (0x2a9 >> 8) & 0xff;
+                txbuffer[2]= (0x2a9 & 0xff);
+                txbuffer[3]= (start_addr & 0xff);       // 0x02a9
+                txbuffer[4]= (start_addr >> 8) & 0xff;  // 0x02aa
+                txbuffer[5]= (end_addr & 0xff);         // 0x02ab
+                txbuffer[6]= (end_addr >> 8) & 0xff;    // 0x02ac
+                txbuffer[7]= autorun;                   // 0x02ad
+                txbuffer[8]= type;                      // 0x02ae
+                send_packet(&txbuffer[0], 6+3); 
+                receive_packet();
+
+                //int tosend = MIN(MAX_PACKET-3,2);
+                //txbuffer[1]=endaddr >> 8;
+                //txbuffer[2]=endaddr & 0xff;
+                //txbuffer[3]=0;
+                //txbuffer[4]=0;
+                //txbuffer[0] = sercmd_prg;
+                //send_packet(&txbuffer[0], 2+3); 
+                //receive_packet();
+
+
+                //printf("remaining size is %d\n", size);
+            }
+
+            fclose(fp_rd);
+        }
+    }
     else 
     {
         move(y_cmdline-2, 0);
@@ -562,6 +711,7 @@ int main(void) {
     printw("  lprg <file.prg> = inject prg program (PET)\n");
     printw("  lcmd <file.cmd> = inject cmd program (TRS)\n");
     printw("  lrom <file.cmd> = inject cmd program (AQUA)\n");
+    printw("  ltap <file.tap> = inject tap program (ORIC)\n");
     printw("  run             = run prg program\n");
     printw("  reset           = reset system\n");
     printw("\n");
@@ -655,7 +805,37 @@ int main(void) {
                             cmdpt=0;
                         }
                     }
-                 }     
+                }
+                else {
+                    if (kb_mode) {
+                        switch (c) {
+                            case 258: //down:
+                                send_key(0x80);
+                                break;
+                            case 259: //up:
+                                send_key(0x81);
+                                break;
+                            case 260: //left:
+                                send_key(0x82);
+                                break;
+                            case 261: //right:
+                                send_key(0x83);
+                                break;
+                            case 338: //pgdw:
+                                send_key(0x83);
+                                break;
+                            case 339: //pgup:
+                                send_key(0x85);
+                                break;
+                            case 262: //home:
+                                send_key(0x86);
+                                break;
+                            case 360: //end:
+                                send_key(0x87);
+                                break;
+                        }
+                    }
+                }     
                 break;
         }
     }

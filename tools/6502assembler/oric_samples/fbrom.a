@@ -1,0 +1,874 @@
+!to "fbrom.bin"
+; ./acme -f plain fbrom.a
+
+
+; Graphics
+; tiles/text map
+REG_TEXTMAP_L1    = $bb80
+REG_TILEMAP_L1    = $c800
+REG_TILEMAP_L0    = $d000
+; tile id 0-255 in 8x8   tile mode
+; tile id 0-63  in 16x16 tile mode
+
+; sprites (96 max) in L2
+NB_SPRITES_MAX    = 96
+
+REG_SPRITE_IND    = $d800
+REG_SPRITE_XHI    = $d880
+REG_SPRITE_XLO    = $d900
+REG_SPRITE_Y      = $d980
+; id:    0-5 (max 63)
+; hflip: 6
+; vflip: 7
+
+; mode
+REG_VIDEO_MODE    = $db00
+; 0-1: resolution (0=640x200,1=320x200,2=256x200)
+
+; bg/text color
+REG_BG_COL        = $db01
+; RGB332
+REG_FG_COL        = $db0d
+; RGB332
+; R: 5-7, 0x20 -> 0xe0   xxx --- --
+; G: 2-4, 0x04 -> 0x1c   --- xxx -- 
+; B: 0-1, 0x00 -> 0x03   --- --- xx  
+
+; layers config
+REG_LAYERS_CFG    = $db02
+; 0: L0 on/off (1=on)
+; 1: L1 on/off (1=on)    (off if HIRES and bitmap in L0!)
+; 2: L2 on/off (1=on)
+; 3: L2 inbetween (0 = sprites top)
+; 4: bitmap/tile in L0 (0=bitmap)
+; 5: petfont/tile in L1 (0=petfont)
+; 6: enable scroll area in L0
+; 7: enable scroll area in L1
+
+; tiles config
+REG_TILES_CFG     = $db0e
+; 0: L0: 0=8x8, 1=16x16
+; 1: L1: 0=8x8, 1=16x16
+; 2-4: xcurtain
+;      0: on/off
+;      1: 8/16 pixels left
+; 5-7: ycurtain
+;      0: on/off
+;      1: 8/16 pixels top
+
+; lines config
+REG_LINES_CFG     = $db03
+; 0: single/perline background color
+; 1: single/perline L0 xscroll
+; 2: single/perline L1 xscroll
+
+; layer scroll
+REG_XSCROLL_HI    = $db04
+; 3-0: L0 xscroll HI
+; 7-4: L1 xscroll HI
+REG_XSCROLL_L0    = $db05
+REG_XSCROLL_L1    = $db06
+REG_YSCROLL_L0    = $db07
+REG_YSCROLL_L1    = $db08
+; 7-0, in pixels
+; scroll area
+REG_SC_START_L0   = $db09
+REG_SC_END_L0     = $db0a
+REG_SC_START_L1   = $db0b
+REG_SC_END_L1     = $db0c
+; 4-0, in tiles/characters
+
+
+; vsync line (0-200, 200 is overscan) (RD)
+REG_VSYNC         = $db0f
+;
+; data transfer
+REG_TLOOKUP       = $da00
+; used as RGB332 LUT for pixels (palette) (WR)
+; also used as 256 scratch buffer for other commands (WR/RD) 
+
+REG_TDEPTH        = $db10
+; WR
+; 1/2/4/8 bits per pixel (using indexed CLUT)
+; 9 = 8 bits RGB332 no CLUT
+; 0 = compressed
+
+REG_TCOMMAND      = $db11
+; WR
+; 0: idle
+; 1: transfer tiles data      (data=tilenr,w,h,packet pixels)
+; 2: transfer sprites data    (data=spritenr,w,h,packet pixels)
+; 3: transfer bitmap data     (data=xh,xl,y,wh,wl,h,w*h/packet pixels) 
+; 4: transfer t/fmap col data (data=layer,col,row,size,size/packet tiles)
+; 5: transfer t/fmap row data (data=layer,col,row,size,size/packet tiles)
+; 6: transfer all tile 8bits data compressed (data=sizeh,sizel,pixels)
+; 7: transfer all sprite 8bits data compressed (data=sizeh,sizel,pixels)
+; 8: transfer bitmap 8bits data compressed (data=sizeh,sizel,pixels)
+; 9: transfer font 1bit data, 8bits a time (data=sizeh,sizel,pixels)  
+
+REG_TPARAMS       = $db12
+; WR
+
+REG_TDATA         = $db13
+; WR
+
+REG_TSTATUS       = $db14
+; transfer status (RD) 1=ready for async commands only
+
+; Redefining tiles/sprite sequence
+; 1. write lookup palette entries needed
+; 2. write transfer mode (1/2/4/8/9)
+; 3. write command 1/2
+; 4. write params tile/sprite id,w,h
+; 5. write data sequence (8bytes*plane for tiles, (h*2)bytes*plane for sprites)
+; (any new command to reset)
+;
+; Transfer bitmap sequence
+; 1. write lookup palette entries needed
+; 2. write transfer mode (1/2/4/8/9)
+; 3. write command 3
+; 4. write params XH,XL,Y,WH,WL,H
+; 5. write data sequence (bytes*plane /packed_bits)
+; (any new command to reset)
+
+; lines background color / scroll (200 values)
+REG_LINES_BG_COL  = $db38
+; RGB332
+REG_LINES_XSCR_HI = $dc00
+; 7-4:  lines L1 xscroll hi, 3-0: L0 xscroll hi
+REG_LINES_L0_XSCR = $dcc8
+REG_LINES_L1_XSCR = $dd90
+;
+; Sprite collision
+; only for first 16 sprites against all the rest (96) 
+; LO (8bits x 96 entries, first 8 sprites, bit0 = sprite 0) 
+; HI (8bits x 96 entries, last  8 sprites, bit0 = sprite 8)
+REG_SPRITE_COL_LO = $df00 
+REG_SPRITE_COL_HI = $df80
+;
+; Audio
+; SID (see C64)
+REG_SIDBASE       = $df00
+
+REG_HYPGFXENA     = $db16
+
+
+; Joystick macros
+JOY_UP            = (1)
+JOY_DOWN          = (2)
+JOY_FIRE          = (4)
+JOY_LEFT          = (8)
+JOY_RIGHT         = (16) 
+
+
+
+
+*= $e85c
+
+prgstart:
+        PLP
+        SEI
+        LDA #1                  ; Enable HyperGFX
+        STA REG_HYPGFXENA
+        NOP
+        jmp start        
+ex1:    LDA #0                  ; Enable HyperGFX
+        STA REG_HYPGFXENA
+        NOP
+        CLI
+        RTS
+ex2:
+        LDA #0                  ; Disable HyperGFX
+        STA REG_HYPGFXENA
+        NOP
+        CLI
+        JMP $e8d6
+
+
+
+ROWLEN     = 80
+ROWLEN_LO  = 40
+FILENAME_SIZE  = 20
+
+start:
+;        sei                     ; Disable interrupts
+        jsr init_keyboard       ; init keyboard routine
+
+        jmp topdir              ; goto root dir and clear
+
+loop:    
+        ldx #63                 ; copy directory name for opendir 
+copydir:
+        lda directory,x
+        sta REG_TLOOKUP,x
+        dex
+        bpl copydir        
+        lda #29                 ; cmd_opendir
+        sta REG_TCOMMAND
+        lda #0
+        sta curpage
+waitstatusdone:
+        lda REG_TSTATUS
+        bne waitstatusdone
+        lda REG_TLOOKUP
+        sta nbfiles             ; nb of files
+        cmp #0
+        beq no_files
+        lda #<filenames         ; dst lo
+        sta loc+1
+        lda #>filenames         ; dst hi
+        sta loc+2
+        ldx #0
+        lda #0
+nextfile:                       ; read DIR filenames char by char
+        pha                     ; file index
+        tay
+        inx
+        lda REG_TLOOKUP,x       ; filetype 0=DIR,1=PRG,2=ROM
+        sta filetypes,y
+        ldy #0
+nextchar:
+        inx
+        lda REG_TLOOKUP,x
+        beq endfilename
+loc:    sta $8090,y
+        iny
+        jmp nextchar        
+endfilename:
+        clc
+        lda loc+1
+        adc #FILENAME_SIZE
+        sta loc+1
+        bcc hic             
+        inc loc+2          
+hic:
+        clc
+        pla
+        adc #1
+        cmp nbfiles
+        bne nextfile
+        jsr print_file_menu
+
+
+waitkey:
+;        JSR $023B               ; READ KEY FROM KEYBOARD.
+;        BPL waitkey             ; Wait until valid key is
+        jsr read_key
+        beq waitkey
+
+
+        cmp #'W'                ; W next page
+        beq nextpage
+        cmp #$0d
+        beq exit
+        cmp #'Q'                ; Q topdir
+        beq rewinddir   
+        jmp wait1
+no_files:
+        jsr print_file_menu
+        lda curpage
+        beq waitkey
+        jmp loop
+wait1:        
+        cmp #$30
+        bmi waitkey
+        cmp #$3A
+        bpl waitkey
+        sec
+        sbc #$30
+        tax                     ; key to index
+        lda key2index,x
+
+        cmp nbfiles
+        bpl waitkey
+        pha
+        tax
+        lda filetypes,x
+        tax
+        pla
+        cpx #0                  ; directory?
+        beq newdir
+
+        pha                     ; tap?
+        jsr clear_screen
+        pla                     ; load tap routine
+        jmp load_tap            
+exit:        
+        jsr clear_screen        ; clear screen
+;        cli
+        jmp ex1
+exit_run:
+;        cli
+        jmp ex2
+
+nextpage:
+        jsr clear_files        
+        lda #30                 ; cmd_nextdir
+        sta REG_TCOMMAND
+        lda #1
+        sta curpage
+        jmp waitstatusdone
+
+rewinddir:
+topdir:
+        lda #0                  ; directory = "" 
+        sta directory
+        sta dirpt
+
+        jsr clear_files        
+        jsr clear_screen
+        jmp loop
+
+newdir:
+        asl                     ;*4
+        asl
+        sta by4+1
+        asl
+        asl
+by4:    adc #0                  ;+*16 = *20
+        clc 
+        jsr append_filename_to_dir
+        jsr clear_files        
+        jsr clear_screen
+        jmp loop
+
+;-------------------------------------------------------------
+append_filename_to_dir:
+        tax
+        ldy dirpt
+        lda #'/'
+        sta directory,y
+        iny
+cpydir: lda line0,x
+        sta directory,y
+        inx
+        iny
+        cmp #0
+        bne cpydir
+        dey
+        sty dirpt
+        rts
+
+;-------------------------------------------------------------
+; Oric-1 / Atmos Keyboard Scanning Routine
+; Hardware addresses
+
+VIA_DDRA    = $0303    ; Data Direction Register A
+VIA_DDRB    = $0302
+VIA_PORTB   = $0300 
+VIA_PORTA   = $030f
+VIA_PCR     = $030C    ; Peripheral Control Register
+
+;Row \ Col       PA0 ($FE)       PA1 ($FD)       PA2 ($FB)       PA3 ($F7)       PA4 ($EF)       PA5 ($DF)       PA6 ($BF)       PA7 ($7F)
+;(0)             7               N               5               V               R-CTRL          1               X               3
+;(1)             J               T               R               F               ESC             Q               D               (unassigned)
+;(2)             M               6               B               4               CTRL            Z               2               C
+;(3)             K               9               ;               -               <               \               '               (unassigned)
+;(4)             SPACE           ,               .               ↑ (Up)          L-SHIFT         ← (Left)        ↓ (Down)        → (Right)
+;(5)             U               I               O               P               FUNCT           DEL             ]               [
+;(6)             Y               H               G               E               ALTGR*          A               S               W
+;(7)             8               L               0               /               R-SHIFT         RETURN          CAPS            =
+
+kcol0: !byte '7','J','M','K',' ','U','Y','8',$fe
+kcol1: !byte 'N','T','6','9',',','I','H','L',$fd
+kcol2: !byte '5','R','B',';','.','O','G','0',$fb
+kcol3: !byte 'V','F','4','-', 0, 'P','E','/',$f7
+kcol4: !byte  0,  0,  0, '<', 0,  0,  0,  0 ,$ef
+kcol5: !byte '1','Q','Z','\', 0,  0, 'A', 13,$df
+kcol6: !byte 'X','D','2',"'", 0, ']','S', 0 ,$bf
+kcol7: !byte '3', 0, 'C', 0,  0, '[','W','=',$7f
+pkey: !byte 0
+
+init_keyboard:
+        lda #$07                ; PB0, PB1, PB2 = output (1), PB3 = input (0)
+        sta VIA_DDRB
+        lda #$ff                ; PB0-7  output (1)
+        sta VIA_DDRA
+        rts
+
+read_col0:
+        ldx #8
+        jmp read_key
+
+read_akey:
+        ldx #(9*8-1)
+k0:
+        lda #14                 ; Write Column Register Number to PortA
+        sta VIA_PORTA 
+        ldy #$ff                ; Tell AY this is Register Number
+        sty VIA_PCR            
+        ldy #$dd                ; Clear CB2, as keeping it high hangs on some orics.
+        sty VIA_PCR             ; Pitty, as all this code could be run only once, otherwise
+        ldy #8                       
+        lda kcol0,x             ; Write column mask to Port A(negative logic)
+        sta VIA_PORTA
+k1:     dex 
+        dey
+        tya
+        bmi k2                  ; Select row on VIA Port B (bits 0-2)  
+        sta VIA_PORTB
+        lda #$fd
+        sta VIA_PCR
+        sty VIA_PCR
+        lda VIA_PORTB           ; Read VIA Port B
+        and #$08                ; Test bit 3 (PB3)
+        beq k1                  ; next row
+        lda kcol0,x
+        rts
+k2:     txa
+        bne k0                  ; next column
+        lda #0
+        rts
+
+read_key:
+        jsr read_akey
+        cmp pkey
+        beq read_key
+        sta pkey
+        rts 
+
+
+wait_space:
+        lda #14                 ; Write Column Register Number to PortA
+        sta VIA_PORTA 
+        ldy #$ff                ; Tell AY this is Register Number
+        sty VIA_PCR            
+        ldy #$dd                ; Clear CB2, as keeping it high hangs on some orics.
+        sty VIA_PCR             ; Pitty, as all this code could be run only once, otherwise
+        ldy #8                       
+        lda #$fe                ; Write column mask to Port A(negative logic)
+        sta VIA_PORTA
+        lda #4                  ; Select row on VIA Port B (bits 0-2) 
+        sta VIA_PORTB
+        lda #$fd
+        sta VIA_PCR
+        sty VIA_PCR
+        lda VIA_PORTB           ; Read VIA Port B
+        and #$08                ; Test bit 3 (PB3)
+        beq k3                  ; not pressed!
+        lda #' ' 
+        rts
+k3:     lda #0
+        rts
+
+;-------------------------------------------------------------
+clear_screen:
+        ldx #224                ; clear screen L1 (text)
+        lda #32
+clear1:
+        sta REG_TEXTMAP_L1-1,x
+        sta REG_TEXTMAP_L1-1+224*1,x
+        sta REG_TEXTMAP_L1-1+224*2,x
+        sta REG_TEXTMAP_L1-1+224*3,x
+        sta REG_TEXTMAP_L1-1+224*4,x
+        dex
+        bne clear1
+
+        lda #ROWLEN_LO          ; init offset table for 40col
+        jsr initlineoffset
+        rts
+
+
+;-------------------------------------------------------------
+clear_files:
+        ldx #FILENAME_SIZE-1    ; clear file buffer 
+clear_f:
+        lda #0
+        sta filenames,x
+        sta filenames+1*FILENAME_SIZE,x
+        sta filenames+2*FILENAME_SIZE,x
+        sta filenames+3*FILENAME_SIZE,x
+        sta filenames+4*FILENAME_SIZE,x
+        sta filenames+5*FILENAME_SIZE,x
+        sta filenames+6*FILENAME_SIZE,x
+        sta filenames+7*FILENAME_SIZE,x
+        sta filenames+8*FILENAME_SIZE,x
+        sta filenames+9*FILENAME_SIZE,x
+        dex
+        bpl clear_f
+        rts
+
+;-------------------------------------------------------------
+initlineoffset:
+        sta rowlen+1
+        lda #<REG_TEXTMAP_L1    ; $8000
+        sta $54
+        lda #>REG_TEXTMAP_L1
+        sta $55
+        ldx #00                 ; line #
+init1:        
+        lda $54                 ; store lo and hi offset
+        sta linelo,x
+        lda $55
+        sta linehi,x
+        clc
+        lda $54
+rowlen: adc #ROWLEN
+        sta $54
+        bcc init2             
+        inc $55          
+init2:
+        inx
+        cpx #25
+        bne init1
+        rts
+ 
+;-------------------------------------------------------------
+print_tab:    
+        pha                             ; print TEXT at 1 TAB 
+        lda #3
+        jmp print0
+print:
+        pha                             ; print TEXT 
+        lda #0
+print0:
+        clc
+        adc linelo,y                    ; dst lo
+        sta addr+1
+        lda linehi,y                    ; dst hi
+        sta addr+2
+        bcc print1
+        inc addr+2
+print1
+        pla
+        sta $54                         ; src text lo 
+        txa                             ; src text hi
+        sta $55
+        ldy #$00
+print2
+        lda ($54),y
+        beq pr_end
+addr    sta $8000,y
+        iny
+        bne print2
+pr_end
+        rts
+
+;-------------------------------------------------------------
+print_numbers:                  
+        ldx #0                  ; y = start row
+pri_num0
+        cpx nbfiles
+        beq pri_exit
+        lda linelo,y            ; dst lo
+        sta addrr+1
+        lda linehi,y            ; dst hi
+        sta addrr+2
+        lda numbers,x
+addrr   sta $8000               ; store digit
+        iny                  
+        inx
+        jmp pri_num0
+pri_exit:                
+        rts
+
+;-------------------------------------------------------------
+print_file_menu:
+        jsr clear_screen        ; clear screen
+        lda #<header            ; header/title
+        ldx #>header
+        ldy #0
+        jsr print
+        lda #<footer1           ; footer1
+        ldx #>footer1
+        ldy #13
+        jsr print
+        lda #<footer2
+        ldx #>footer2
+print_f1:
+        ldy #14
+        jsr print
+        lda #<directory         ; footer3
+        ldx #>directory
+        ldy #15
+        jsr print 
+
+        ldy #2                  ; print numbers of each row
+        jsr print_numbers
+        lda #<line0             ; print 10 filenames list
+        ldx #>line0
+        ldy #2
+        jsr print_tab
+        lda #<line1
+        ldx #>line1
+        ldy #3
+        jsr print_tab
+        lda #<line2
+        ldx #>line2
+        ldy #4
+        jsr print_tab
+        lda #<line3
+        ldx #>line3
+        ldy #5
+        jsr print_tab
+        lda #<line4
+        ldx #>line4
+        ldy #6
+        jsr print_tab
+        lda #<line5
+        ldx #>line5
+        ldy #7
+        jsr print_tab
+        lda #<line6
+        ldx #>line6
+        ldy #8
+        jsr print_tab
+        lda #<line7
+        ldx #>line7
+        ldy #9
+        jsr print_tab
+        lda #<line8
+        ldx #>line8
+        ldy #10
+        jsr print_tab
+        lda #<line9
+        ldx #>line9
+        ldy #11
+        jsr print_tab
+        rts
+
+
+
+
+;-------------------------------------------------------------
+fload1:
+        ldx #1                  ; 1 byte 
+fload:
+        lda #28                 ; cmd_readfile
+        sta REG_TCOMMAND
+        txa                     ; # bytes to read
+        sta REG_TPARAMS
+fload0:
+        lda REG_TSTATUS
+        bne fload0
+        rts
+
+
+;-------------------------------------------------------------
+load_tap:
+        pha
+        lda #27                 ; cmd_openfile
+        sta REG_TCOMMAND
+        pla
+        sta REG_TPARAMS         ; file index
+load0:
+        lda REG_TSTATUS
+        bne load0
+        lda REG_TLOOKUP         ; should be 1 when opened
+        beq load_end            ; end of program
+
+;        ldx #2                  ; ignore first 2 bytes
+;        jsr fload
+;        lda REG_TLOOKUP         ; nb bytes read
+;        beq load_end            ; end of program
+
+;        ldy #0
+
+load_tsync:
+        jsr fload1              ; load 1 byte
+        lda REG_TLOOKUP         ; nb bytes read
+        bne load_tcont          ; end of file?
+        jmp end_of_file
+load_tcont:
+        lda REG_TLOOKUP+1 
+;        pha
+;        jsr printhex
+;        pla
+        cmp #$16
+        beq load_tsync
+        cmp #$24
+        beq load_header
+
+load_end:
+        jmp exit
+
+load_header:
+
+        ldx #9                  ; 9 bytes
+        jsr fload
+        lda REG_TLOOKUP         ; nb bytes read
+        cmp #9
+        bne load_end            ; end of program
+
+        lda REG_TLOOKUP+3       ; type
+        sta type   
+        lda REG_TLOOKUP+4       ; autorun
+        sta autorun
+        lda REG_TLOOKUP+5       ; endaddr hi 
+        sta endaddr+1
+        lda REG_TLOOKUP+6       ; endaddr lo 
+        sta endaddr
+        lda REG_TLOOKUP+7       ; staaddr hi
+        sta $55 
+        sta staaddr+1
+        lda REG_TLOOKUP+8       ; staaddr lo
+        sta $54 
+        sta staaddr
+
+
+        ldy #80
+load_name:
+        jsr fload1              ; load 1 byte
+        lda REG_TLOOKUP         ; nb bytes read
+        beq load_end            ; end of program
+        lda REG_TLOOKUP+1 
+        beq load_section
+        sta REG_TEXTMAP_L1,y
+        iny
+        jmp load_name
+
+load_section:
+
+        ldy #40
+        lda type
+        jsr printhex
+        lda autorun
+        jsr printhex
+        iny
+        lda staaddr+1
+        jsr printhex
+        lda staaddr
+        jsr printhex
+        iny
+        lda endaddr+1
+        jsr printhex
+        lda endaddr
+        jsr printhex
+
+
+
+
+        lda $54
+        tay
+        lda #0
+        sta $54
+load1:
+        ldx #$ff                ; max buff bytes
+        jsr fload
+        lda REG_TLOOKUP         ; nb bytes
+        beq load4               ; end of file
+        sta btoread
+        ldx #00
+load2:        
+        lda REG_TLOOKUP+1,x     ; read data byte        
+        sta ($54),y             ; store it 
+        iny
+        bne load3             
+        inc $55          
+load3:   
+        inx
+        cpx btoread
+        bne load2
+        jmp load1
+load4:
+
+        jmp load_tsync          ; next section!
+
+end_of_file:
+        lda staaddr
+        sta $02a9
+        lda staaddr+1
+        sta $02aa
+        lda endaddr
+        sta $02ab
+        sta $9c
+        lda endaddr+1
+        sta $02ac
+        sta $9d
+        lda autorun
+        sta $02ad
+        lda type
+        sta $02ae
+        jmp exit_run
+
+printhex:        
+        pha
+        lsr
+        lsr
+        lsr
+        lsr
+        and #$f
+        tax 
+        lda hex,x
+        sta REG_TEXTMAP_L1,y
+        iny
+        pla
+        and #$f
+        tax
+        lda hex,x
+        sta REG_TEXTMAP_L1,y
+        iny
+        rts
+
+type: !byte 0
+autorun: !byte 0
+endaddr: !byte 0,0
+staaddr: !byte 0,0
+btoread: !byte 0
+hex: !text "0123456789ABCDEF"
+
+
+
+
+;-------------------------------------------------------------
+linelo:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+linehi:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+curpage:
+!byte 0
+nbfiles:
+!byte 0
+nbbytesrom:
+!byte 0
+
+key2index
+!text 9,0,1,2,3,4,5,6,7,8
+numbers
+!text "1234567890"
+dirpt:
+!byte 0
+directory:
+!text "0123456789abcdef0123456789abcdef"
+!text "0123456789abcdef0123456789abcdef"
+!text "0123456789abcdef0123456789abcdef"
+!text "0123456789abcdef0123456789abcdef"
+
+header
+!text "FILE BROWSER 1.0, SELECT FILE:   "
+!byte 0
+footer1
+!text "W=PAGE  Q=TOPDIR  RET=EXIT       "
+!byte 0
+footer2
+!text "(0-9) LOAD/OPENDIR               "
+!byte 0
+
+filetypes
+!byte 0,0,0,0,0,0,0,0,0,0
+filenames:
+line0:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line1:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line2:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line3:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line4:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line5:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line6:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line7:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line8:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+line9:
+!byte 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+prgend:
+!byte $00
+

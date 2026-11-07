@@ -12,7 +12,7 @@
 #define TRS_CLOCK              27  // Z80 clock output on Z80 CPU standalone
 #define CONFIG_PIN_BUS_IOOUT   27  // OR IO OUT on TRS80 real system 
 #define HYPERGFX_ENA_INPUT     27  // on real TRS80 MODEL III !
-#define PET_CLOCK              27  // 6502 clock output on 6502 CPU standalone (PET VOUT on real system = unused)
+#define PET_CLOCK              27  // 6502 clock IN (p37) on 6502 CPU standalone (PET VOUT on real system = unused)
 
 
 // Reset

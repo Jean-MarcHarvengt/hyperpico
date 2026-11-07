@@ -5,8 +5,8 @@
 
 
 #define CPU_EMU       1
-//#define HAS_PETIO       1  	// PET extension (or standalone emu)
-
+//#define CPU_6502      1  // standlone with 6502 CPU
+//#define ORIC_64K      1  // inside ORIC
 
 
 //
@@ -145,46 +145,49 @@
 // 9f00-9f7f: Sprite collision LO (first 8 sprites, bit0 = sprite 0)
 // 9f80-9fff: Sprite collision HI (last  8 sprites, bit0 = sprite 8)
 // 
-#define REG_TEXTMAP_L1    (0x8000 - 0x8000) // 32768
-#define REG_TILEMAP_L1    (0x8800 - 0x8000) // 34816
-#define REG_TILEMAP_L0    (0x9000 - 0x8000) // 36864
-#define REG_SPRITE_IND    (0x9800 - 0x8000) // 38912
-#define REG_SPRITE_XHI    (0x9880 - 0x8000) // 39040
-#define REG_SPRITE_XLO    (0x9900 - 0x8000) // 39168
-#define REG_SPRITE_Y      (0x9980 - 0x8000) // 39296
-#define REG_TLOOKUP       (0x9a00 - 0x8000) // 39424
-#define REG_VIDEO_MODE    (0x9b00 - 0x8000) // 39680
-#define REG_BG_COL        (0x9b01 - 0x8000) // 39681
-#define REG_LAYERS_CFG    (0x9b02 - 0x8000) // 39682
-#define REG_LINES_CFG     (0x9b03 - 0x8000) // 39683
-#define REG_XSCROLL_HI    (0x9b04 - 0x8000) // 39684
-#define REG_XSCROLL_L0    (0x9b05 - 0x8000) // 39685
-#define REG_XSCROLL_L1    (0x9b06 - 0x8000) // 39686
-#define REG_YSCROLL_L0    (0x9b07 - 0x8000) // 39687
-#define REG_YSCROLL_L1    (0x9b08 - 0x8000) // 39688
-#define REG_SC_START_L0   (0x9b09 - 0x8000) // 39689
-#define REG_SC_END_L0     (0x9b0a - 0x8000) // 39690
-#define REG_SC_START_L1   (0x9b0b - 0x8000) // 39691
-#define REG_SC_END_L1     (0x9b0c - 0x8000) // 39692
-#define REG_FG_COL        (0x9b0d - 0x8000) // 39693
-#define REG_TILES_CFG     (0x9b0e - 0x8000) // 39694
-#define REG_VSYNC         (0x9b0f - 0x8000) // 39695
+#define REG_TEXTMAP_L1    (0xc000 - 0xc000) // 32768
+#define REG_TILEMAP_L1    (0xc800 - 0xc000) // 34816
+#define REG_TILEMAP_L0    (0xd000 - 0xc000) // 36864
+#define REG_SPRITE_IND    (0xd800 - 0xc000) // 38912
+#define REG_SPRITE_XHI    (0xd880 - 0xc000) // 39040
+#define REG_SPRITE_XLO    (0xd900 - 0xc000) // 39168
+#define REG_SPRITE_Y      (0xd980 - 0xc000) // 39296
+#define REG_TLOOKUP       (0xda00 - 0xc000) // 39424
+#define REG_VIDEO_MODE    (0xdb00 - 0xc000) // 39680
+#define REG_BG_COL        (0xdb01 - 0xc000) // 39681
+#define REG_LAYERS_CFG    (0xdb02 - 0xc000) // 39682
+#define REG_LINES_CFG     (0xdb03 - 0xc000) // 39683
+#define REG_XSCROLL_HI    (0xdb04 - 0xc000) // 39684
+#define REG_XSCROLL_L0    (0xdb05 - 0xc000) // 39685
+#define REG_XSCROLL_L1    (0xdb06 - 0xc000) // 39686
+#define REG_YSCROLL_L0    (0xdb07 - 0xc000) // 39687
+#define REG_YSCROLL_L1    (0xdb08 - 0xc000) // 39688
+#define REG_SC_START_L0   (0xdb09 - 0xc000) // 39689
+#define REG_SC_END_L0     (0xdb0a - 0xc000) // 39690
+#define REG_SC_START_L1   (0xdb0b - 0xc000) // 39691
+#define REG_SC_END_L1     (0xdb0c - 0xc000) // 39692
+#define REG_FG_COL        (0xdb0d - 0xc000) // 39693
+#define REG_TILES_CFG     (0xdb0e - 0xc000) // 39694
+#define REG_VSYNC         (0xdb0f - 0xc000) // 39695
 
-#define REG_TDEPTH        (0x9b10 - 0x8000) // 39696
-#define REG_TCOMMAND      (0x9b11 - 0x8000) // 39697
-#define REG_TPARAMS       (0x9b12 - 0x8000) // 39698
-#define REG_TDATA         (0x9b13 - 0x8000) // 39699
-#define REG_TSTATUS       (0x9b14 - 0x8000) // 39700
-#define REG_PALNTSC       (0x9b15 - 0x8000) // 39700
+#define REG_TDEPTH        (0xdb10 - 0xc000) // 39696
+#define REG_TCOMMAND      (0xdb11 - 0xc000) // 39697
+#define REG_TPARAMS       (0xdb12 - 0xc000) // 39698
+#define REG_TDATA         (0xdb13 - 0xc000) // 39699
+#define REG_TSTATUS       (0xdb14 - 0xc000) // 39700
+#define REG_PALNTSC       (0xdb15 - 0xc000) // 39700
+#define REG_HYPGFX        (0xdb16 - 0xc000) // 39701
+#define REG_HYPGFXENA     (0xdb16) // 39701
 
-#define REG_SID_BASE      (0x9b18 - 0x8000) // 39704
 
-#define REG_LINES_BG_COL  (0x9b38 - 0x8000) // 39736
-#define REG_LINES_XSCR_HI (0x9c00 - 0x8000) // 39936
-#define REG_LINES_L0_XSCR (0x9cc8 - 0x8000) // 40136
-#define REG_LINES_L1_XSCR (0x9d90 - 0x8000) // 40336
-#define REG_SPRITE_COL_LO (0x9f00 - 0x8000) // 40704
-#define REG_SPRITE_COL_HI (0x9f80 - 0x8000) // 40832
+#define REG_SID_BASE      (0xdb18 - 0xc000) // 39704
+
+#define REG_LINES_BG_COL  (0xdb38 - 0xc000) // 39736
+#define REG_LINES_XSCR_HI (0xdc00 - 0xc000) // 39936
+#define REG_LINES_L0_XSCR (0xdcc8 - 0xc000) // 40136
+#define REG_LINES_L1_XSCR (0xdd90 - 0xc000) // 40336
+#define REG_SPRITE_COL_LO (0xdf00 - 0xc000) // 40704
+#define REG_SPRITE_COL_HI (0xdf80 - 0xc000) // 40832
 
 #define GET_VIDEO_MODE    ( gfxmem[REG_VIDEO_MODE] )
 #define GET_BG_COL        ( gfxmem[REG_BG_COL] )

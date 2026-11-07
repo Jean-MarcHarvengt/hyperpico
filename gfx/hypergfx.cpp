@@ -93,8 +93,10 @@ bool hyper_enabled = true;
 
 // Screen resolution
 static uint8_t video_default = VMODE_HIRES;
+static bool force_res_change = false;
 static int video_mode;
 static int cur_scanline;
+static uint32_t frame_count;
 
 // Frame buffer
 static ALIGNED uint8_t Bitmap[LO_XRES*MAXHEIGHT+GFX_MARGIN];
@@ -142,7 +144,7 @@ static unsigned char *gfxmem=&memory[0xe000];
 static unsigned char *gfxmem=&memory[0xe000];
 #endif
 #ifdef ORIC
-static unsigned char *gfxmem=&memory[0x8000];
+static unsigned char *gfxmem=&memory[0xc000];
 #endif
 
 #ifdef PET
@@ -160,6 +162,250 @@ static uint8_t aqua_palette[16] = {
    VGA_RGB(0xf7,0xf7,0x73), VGA_RGB(0x21,0xce,0x42), VGA_RGB(0xad,0x21,0x21), VGA_RGB(0x31,0x31,0x31)
 };
 static  uint16_t aqua_lut[256];
+#endif
+
+#ifdef ORIC
+static uint8_t colors[8] {VGA_RGB(0x00,0x00,0x00), VGA_RGB(0xff,0x00,0x00), VGA_RGB(0x00,0xff,0x00), VGA_RGB(0xff,0xff,0x00), VGA_RGB(0x00,0x00,0xff), VGA_RGB(0xff,0x00,0xff), VGA_RGB(0x00,0xff,0xff), VGA_RGB(0xff,0xff,0xff)};
+static uint8_t video_attrib=0;
+static uint8_t text_attrib=0;
+static uint8_t blink=0x3f;
+
+enum VideoAttribs
+{
+    HZ_50 = 0x02,
+    HIRES = 0x04
+};
+
+enum TextAttribs
+{
+    ALTERNATE_CHARSET = 0x01,
+    DOUBLE_SIZE = 0x02,
+    BLINKING = 0x04,
+};
+
+
+inline uint16_t calcRowAddr(uint8_t raster_line, uint8_t video_attrib)
+{
+    if (video_attrib & VideoAttribs::HIRES && raster_line < 200) {
+        return 0xa000 + raster_line * 40;     // Hires: return address for hires data for line.
+    }
+    return 0xbb80 + (raster_line >> 3) * 40;    // Text (lores or > 200): return address to char data for line (>>3).
+}
+
+static void __not_in_flash("OricBlit40") OricBlit40(uint8_t * texture_line, uint8_t raster_line)
+{
+    uint8_t bg_col = colors[0];
+    uint8_t fg_col = colors[7];
+    text_attrib = 0;
+    blink = 0x3f;
+
+    //auto* texture_line = reinterpret_cast<uint32_t*>(&pixels[raster_line * Frontend::texture_width * Frontend::texture_bpp]);
+
+    //uint8_t * texture_line = (uint8_t *)hdmi_get_line_buffer(raster_line);
+    uint16_t row = calcRowAddr(raster_line, video_attrib);
+
+    // 40 characters wide, regardless of lores or hires.
+    for (uint16_t x = 0; x < 40; x++) {
+        bool ctrl_char = false;
+
+        // get char code.
+        uint8_t ch = memory[row + x];
+
+        if (!(ch & 0x60)) {
+            ctrl_char = true;
+            switch(ch & 0x18)
+            {
+                case 0x00:
+                    // Ink color.
+                    fg_col = colors[ch & 7];
+                    break;
+                case 0x08:
+                    // Text attributes.
+                    text_attrib = ch & 7;
+                    blink = ch & 0x04 ? 0x00 : 0x3f;
+                    break;
+                case 0x10:
+                    // Paper color.
+                    bg_col = colors[ch & 7];
+                    break;
+                case 0x18:
+                    // Video control attrs.
+                    video_attrib = ch & 0x07;
+                    row = calcRowAddr(raster_line, video_attrib);
+                    break;
+            }
+        }
+
+        uint8_t mask = frame_count & 0x10 ? 0x3f : blink;
+
+        uint8_t chr_dat = 0;
+        if (!ctrl_char) {
+            if ((video_attrib & VideoAttribs::HIRES) && raster_line < 200) {
+                chr_dat = ch & mask;  // Hires, read byte directly.
+            }
+            else {
+                // Get char pixel data for read char code. If hires > 200, charmem is at 0x9800.
+                uint8_t* char_mem = memory + ((video_attrib & VideoAttribs::HIRES) ? 0x9800 : 0xb400) +
+                                    ((text_attrib & TextAttribs::ALTERNATE_CHARSET) ? 128 * 8 : 0);
+
+                uint8_t apan = (text_attrib & TextAttribs::DOUBLE_SIZE) ? ((raster_line >> 1) & 0x07) : (raster_line & 0x07);
+                chr_dat = char_mem[((ch & 0x7f) << 3) + apan] & mask;
+            }
+        }
+
+        // Apply per-char inversion to colors.
+        const uint8_t inv = (ch & 0x80) ? VGA_RGB(0xff,0xff,0xff) : 0;   // preserve alpha
+        const uint8_t fg_eff = fg_col ^ inv;
+        const uint8_t bg_eff = bg_col ^ inv;
+
+        // Pack colors into [col,col] 64-bit lanes (two 32-bit pixels per word).
+        //const uint64_t fg64 = (uint64_t)fg_eff | ((uint64_t)fg_eff << 32);
+        //const uint64_t bg64 = (uint64_t)bg_eff | ((uint64_t)bg_eff << 32);
+
+        // Look up 6-pixel mask (3 words) for this 6-bit pattern.
+        //const uint64_t* m = char_mask[chr_dat & 0x3F];
+
+        // Branchless blend: out = bg ^ (mask & (fg ^ bg))
+        //const uint64_t fx = fg64 ^ bg64;
+
+        //uint64_t* out64 = reinterpret_cast<uint64_t*>(texture_line);
+        //out64[0] = bg64 ^ (m[0] & fx);
+        //out64[1] = bg64 ^ (m[1] & fx);
+        //out64[2] = bg64 ^ (m[2] & fx);
+
+        // advance by 6 pixels (24 bytes)
+        //texture_line += 6;
+
+        if (chr_dat & 0x20) *texture_line++=fg_eff;
+        else *texture_line++=bg_eff;
+        if (chr_dat & 0x10) *texture_line++=fg_eff;
+        else *texture_line++=bg_eff;
+        if (chr_dat & 0x08) *texture_line++=fg_eff;
+        else *texture_line++=bg_eff;
+        if (chr_dat & 0x04) *texture_line++=fg_eff;
+        else *texture_line++=bg_eff;
+        if (chr_dat & 0x02) *texture_line++=fg_eff;
+        else *texture_line++=bg_eff;
+        if (chr_dat & 0x01) *texture_line++=fg_eff;
+        else *texture_line++=bg_eff;
+    }
+}
+
+
+static void __not_in_flash("OricBlitKey40") OricBlitKey40(uint8_t * texture_line, uint8_t raster_line, uint8_t bgcolor)
+{
+    uint8_t bg_col = colors[0];
+    uint8_t fg_col = colors[7];
+    text_attrib = 0;
+    blink = 0x3f;
+
+    //auto* texture_line = reinterpret_cast<uint32_t*>(&pixels[raster_line * Frontend::texture_width * Frontend::texture_bpp]);
+
+    //uint8_t * texture_line = (uint8_t *)hdmi_get_line_buffer(raster_line);
+    uint16_t row = calcRowAddr(raster_line, video_attrib);
+
+    // 40 characters wide, regardless of lores or hires.
+    for (uint16_t x = 0; x < 40; x++) {
+        bool ctrl_char = false;
+
+        // get char code.
+        uint8_t ch = memory[row + x];
+
+        if (!(ch & 0x60)) {
+            ctrl_char = true;
+            switch(ch & 0x18)
+            {
+                case 0x00:
+                    // Ink color.
+                    fg_col = colors[ch & 7];
+                    break;
+                case 0x08:
+                    // Text attributes.
+                    text_attrib = ch & 7;
+                    blink = ch & 0x04 ? 0x00 : 0x3f;
+                    break;
+                case 0x10:
+                    // Paper color.
+                    bg_col = colors[ch & 7];
+                    break;
+                case 0x18:
+                    // Video control attrs.
+                    video_attrib = ch & 0x07;
+                    row = calcRowAddr(raster_line, video_attrib);
+                    break;
+            }
+        }
+
+        uint8_t mask = frame_count & 0x10 ? 0x3f : blink;
+
+        uint8_t chr_dat = 0;
+        if (!ctrl_char) {
+            if ((video_attrib & VideoAttribs::HIRES) && raster_line < 200) {
+                chr_dat = ch & mask;  // Hires, read byte directly.
+            }
+            else {
+                // Get char pixel data for read char code. If hires > 200, charmem is at 0x9800.
+                uint8_t* char_mem = memory + ((video_attrib & VideoAttribs::HIRES) ? 0x9800 : 0xb400) +
+                                    ((text_attrib & TextAttribs::ALTERNATE_CHARSET) ? 128 * 8 : 0);
+
+                uint8_t apan = (text_attrib & TextAttribs::DOUBLE_SIZE) ? ((raster_line >> 1) & 0x07) : (raster_line & 0x07);
+                chr_dat = char_mem[((ch & 0x7f) << 3) + apan] & mask;
+            }
+        }
+
+        // Apply per-char inversion to colors.
+        const uint8_t inv = (ch & 0x80) ? VGA_RGB(0xff,0xff,0xff) : 0;   // preserve alpha
+        const uint8_t fg_eff = fg_col ^ inv;
+        const uint8_t bg_eff = bg_col ^ inv;
+
+        // Pack colors into [col,col] 64-bit lanes (two 32-bit pixels per word).
+        //const uint64_t fg64 = (uint64_t)fg_eff | ((uint64_t)fg_eff << 32);
+        //const uint64_t bg64 = (uint64_t)bg_eff | ((uint64_t)bg_eff << 32);
+
+        // Look up 6-pixel mask (3 words) for this 6-bit pattern.
+        //const uint64_t* m = char_mask[chr_dat & 0x3F];
+
+        // Branchless blend: out = bg ^ (mask & (fg ^ bg))
+        //const uint64_t fx = fg64 ^ bg64;
+
+        //uint64_t* out64 = reinterpret_cast<uint64_t*>(texture_line);
+        //out64[0] = bg64 ^ (m[0] & fx);
+        //out64[1] = bg64 ^ (m[1] & fx);
+        //out64[2] = bg64 ^ (m[2] & fx);
+
+        // advance by 6 pixels (24 bytes)
+        //texture_line += 6;
+
+        if (bg_eff == bgcolor) {
+          if (chr_dat & 0x20) *texture_line++=fg_eff;
+          else texture_line++;
+          if (chr_dat & 0x10) *texture_line++=fg_eff;
+          else texture_line++;
+          if (chr_dat & 0x08) *texture_line++=fg_eff;
+          else texture_line++;
+          if (chr_dat & 0x04) *texture_line++=fg_eff;
+          else texture_line++;
+          if (chr_dat & 0x02) *texture_line++=fg_eff;
+          else texture_line++;
+          if (chr_dat & 0x01) *texture_line++=fg_eff;
+          else texture_line++;
+        }
+        else {
+          if (chr_dat & 0x20) *texture_line++=fg_eff;
+          else *texture_line++=bg_eff;
+          if (chr_dat & 0x10) *texture_line++=fg_eff;
+          else *texture_line++=bg_eff;
+          if (chr_dat & 0x08) *texture_line++=fg_eff;
+          else *texture_line++=bg_eff;
+          if (chr_dat & 0x04) *texture_line++=fg_eff;
+          else *texture_line++=bg_eff;
+          if (chr_dat & 0x02) *texture_line++=fg_eff;
+          else *texture_line++=bg_eff;
+          if (chr_dat & 0x01) *texture_line++=fg_eff;
+          else *texture_line++=bg_eff;
+        }
+    }
+}
 #endif
 
 static uint16_t screen_width = 640;
@@ -200,7 +446,8 @@ static void __not_in_flash("VideoRenderLineBG") VideoRenderLineBG(uint8_t * line
   uint32_t * dst32 = (uint32_t *)linebuffer;      
   // Background color
   uint32_t bgcolor32 = 0;
-  if (hyper_enabled) {
+  if (hyper_enabled)
+  { 
     bgcolor32 = (gfxmem[REG_BG_COL]<<24)+(gfxmem[REG_BG_COL]<<16)+(gfxmem[REG_BG_COL]<<8)+(gfxmem[REG_BG_COL]);
     if ( BG_COL_LINE_ENA ) 
     {
@@ -214,7 +461,8 @@ static void __not_in_flash("VideoRenderLineBG") VideoRenderLineBG(uint8_t * line
 
 static void __not_in_flash("VideoRenderLineL0") VideoRenderLineL0(uint8_t * linebuffer, int scanline)
 {
-  if (hyper_enabled) {
+  if (hyper_enabled)
+  {
     // Layer 0
     if (LAYER_L0_ENA)
     {
@@ -280,39 +528,62 @@ static void __not_in_flash("VideoRenderLineL0") VideoRenderLineL0(uint8_t * line
 
 static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * linebuffer, int scanline)
 {
-  if (!hyper_enabled) {
+//#ifdef ORIC 
+//  if (video_mode == 0) memory[0xBB86] = 0x30;
+//  else if (video_mode == 1) memory[0xBB86] = 0x31;
+//  else if (video_mode == 2) memory[0xBB86] = 0x32;
+//  else memory[0xBB86] = 0x20;
+//  if (gfxmem[REG_HYPGFX] == 1) memory[0xBB86] = 0x41;
+//  else memory[0xBB86] = 0x42;
+//  if (!( (hyper_enabled) && (gfxmem[REG_HYPGFX] == 1) ))
+//#endif
+  if (!hyper_enabled)
+  {
     int scroll = 0;
-#ifdef PET    
-    uint8_t fgcolor = 0x1c;
-    int screen_width_in_chars = screen_width >> 3;
-    unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
-    unsigned char * fontpt = &font[(scanline&0x7)*256+(font_lowercase?0x800:0x000)];
-    if (screen_width_in_chars == 32) { 
-      TextBlitKey32(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
-    }
-    else if (screen_width_in_chars == 40) { 
-      TextBlitKey40(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
-    }
-    else { 
-//        TextBlit80(linebuffer, charpt, screen_width_in_chars/2, &fgcolorlut[0], fontpt, scroll&7, (scroll>>3)%40);          
-      TextBlitKey80(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+#ifdef PET
+    if (scanline < 200)
+    {
+      uint8_t fgcolor = 0x1c;
+      int screen_width_in_chars = screen_width >> 3;
+      unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
+      unsigned char * fontpt = &font[(scanline&0x7)*256+(font_lowercase?0x800:0x000)];
+      if (screen_width_in_chars == 32) { 
+        TextBlitKey32(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+      }
+      else if (screen_width_in_chars == 40) { 
+        TextBlitKey40(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+      }
+      else { 
+        TextBlitKey80(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+      }
     }
 #endif
 #ifdef TRS
-    uint8_t fgcolor = 0xff;
-    int screen_width_in_chars = 64; 
-    unsigned char * charpt = &memory[VIDEO_START + (scanline/12)*screen_width_in_chars];    
-    unsigned char * fontpt = &font[(scanline%12)*256+(font_reversed?0x800:0x000)];
-    TextBlitKey64(linebuffer+64, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+    if (scanline < 192)
+    {
+      uint8_t fgcolor = 0xff;
+      int screen_width_in_chars = 64; 
+      unsigned char * charpt = &memory[VIDEO_START + (scanline/12)*screen_width_in_chars];    
+      unsigned char * fontpt = &font[(scanline%12)*256+(font_reversed?0x800:0x000)];
+      TextBlitKey64(linebuffer+64, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+    }
 #endif 
 #ifdef AQUA
-    uint8_t fgcolor = 0xff;
-    int screen_width_in_chars = 40;
-    unsigned char * charpt = &memory[VIDEO_START + (scanline/8)*screen_width_in_chars];    
-    unsigned char * fontpt = &font[(scanline%8)*256];
-    TextBlit40(linebuffer, (scroll>>3)%40, screen_width_in_chars, (uint8_t *)aqua_lut, fontpt, scroll&7, charpt, charpt+0x400);          
+    if (scanline < 192)
+    {
+      uint8_t fgcolor = 0xff;
+      int screen_width_in_chars = 40;
+      unsigned char * charpt = &memory[VIDEO_START + (scanline/8)*screen_width_in_chars];    
+      unsigned char * fontpt = &font[(scanline%8)*256];
+      TextBlit40(linebuffer, (scroll>>3)%40, screen_width_in_chars, (uint8_t *)aqua_lut, fontpt, scroll&7, charpt, charpt+0x400);          
+    }
 #endif
 #ifdef ORIC
+    if (scanline < 224)
+    {
+      int screen_width_in_chars = 40;
+      OricBlit40(&linebuffer[(320-240)/2], scanline);
+    }
 #endif
   }
   else {
@@ -326,101 +597,143 @@ static void __not_in_flash("VideoRenderLineL1") VideoRenderLineL1(uint8_t * line
     {
       if (LAYER_L1_ENA)
       {
-        scanline = (scanline + GET_YSCROLL_L1) % MAXHEIGHT;    
         if ( L1_TILE_ENA )
         {
-          int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0x0f)<<8) ):GET_XSCROLL_L1;
-          if (L1_TILE_16_ENA) 
+          if (scanline < MAXHEIGHT)
           {
-            unsigned char * tilept = &gfxmem[(scanline >> 4)*(screen_width >> 4)+REG_TILEMAP_L1];
-            uint8_t * src = &TileData[(scanline&15) << 4];
-            int screen_width_in_tiles = screen_width >> 4;
-            if (screen_width_in_tiles == 16) {
-              TileBlitKey16_16(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&15, (scroll>>3)%16);
+            scanline = (scanline + GET_YSCROLL_L1) % MAXHEIGHT;    
+            int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0x0f)<<8) ):GET_XSCROLL_L1;
+            if (L1_TILE_16_ENA) 
+            {
+              unsigned char * tilept = &gfxmem[(scanline >> 4)*(screen_width >> 4)+REG_TILEMAP_L1];
+              uint8_t * src = &TileData[(scanline&15) << 4];
+              int screen_width_in_tiles = screen_width >> 4;
+              if (screen_width_in_tiles == 16) {
+                TileBlitKey16_16(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&15, (scroll>>3)%16);
+              }
+              else if (screen_width_in_tiles == 20) {
+                TileBlitKey16_20(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&15, (scroll>>3)%20);
+              }
+              else {  
+                TileBlitKey16_40(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&15, (scroll>>3)%40);
+              }
             }
-            else if (screen_width_in_tiles == 20) {
-              TileBlitKey16_20(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&15, (scroll>>3)%20);
-            }
-            else {  
-              TileBlitKey16_40(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&15, (scroll>>3)%40);
-            }
-          }
-          else
-          {
-            unsigned char * tilept = &gfxmem[(scanline >> 3)*(screen_width >> 3)+REG_TILEMAP_L1];
-            uint8_t * src = &TileData[(scanline&7) << 3];
-            int screen_width_in_tiles = screen_width >> 3;
-            if (screen_width_in_tiles == 32) {
-              TileBlitKey8_32(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&7, (scroll>>3)%32);
-            }
-            else if (screen_width_in_tiles == 40) { 
-              TileBlitKey8_40(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&7, (scroll>>3)%40);
-            }
-            else { 
-              TileBlitKey8_80(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&7, (scroll>>3)%80);
-            }
+            else
+            {
+              scanline = (scanline + GET_YSCROLL_L1) % MAXHEIGHT;
+              unsigned char * tilept = &gfxmem[(scanline >> 3)*(screen_width >> 3)+REG_TILEMAP_L1];
+              uint8_t * src = &TileData[(scanline&7) << 3];
+              int screen_width_in_tiles = screen_width >> 3;
+              if (screen_width_in_tiles == 32) {
+                TileBlitKey8_32(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&7, (scroll>>3)%32);
+              }
+              else if (screen_width_in_tiles == 40) { 
+                TileBlitKey8_40(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&7, (scroll>>3)%40);
+              }
+              else { 
+                TileBlitKey8_80(linebuffer, tilept, screen_width_in_tiles, 0, src, scroll&7, (scroll>>3)%80);
+              }
+            }            
           }
         }
         else
         {
 #ifdef PET   
-          uint8_t fgcolor = GET_FG_COL;
-          int screen_width_in_chars = screen_width >> 3;
-          unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
-          unsigned char * fontpt = &font[(scanline&0x7)*256+(font_lowercase?0x800:0x000)];
-          int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
-          if (screen_width_in_chars == 32) { 
-            TextBlitKey32(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
-          }
-          else if (screen_width_in_chars == 40) { 
-            TextBlitKey40(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
-          }
-          else { 
-    //        TextBlit80(linebuffer, charpt, screen_width_in_chars/2, &fgcolorlut[0], fontpt, scroll&7, (scroll>>3)%40);          
-            TextBlitKey80(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+          if (scanline < 200)
+          {
+            scanline = (scanline + GET_YSCROLL_L1) % 200;
+            uint8_t fgcolor = GET_FG_COL;
+            int screen_width_in_chars = screen_width >> 3;
+            unsigned char * charpt = &gfxmem[(scanline>>3)*screen_width_in_chars+REG_TEXTMAP_L1];    
+            unsigned char * fontpt = &font[(scanline&0x7)*256+(font_lowercase?0x800:0x000)];
+            int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
+            if (screen_width_in_chars == 32) { 
+              TextBlitKey32(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+            }
+            else if (screen_width_in_chars == 40) { 
+              TextBlitKey40(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+            }
+            else { 
+              TextBlitKey80(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+            }
           }
 #endif
 #ifdef TRS
-          uint8_t fgcolor = GET_FG_COL;
-          int screen_width_in_chars = 64;
-          unsigned char * charpt = &memory[VIDEO_START + (scanline/12)*screen_width_in_chars];    
-          unsigned char * fontpt = &font[(scanline%12)*256+(font_reversed?0x800:0x000)];
-          int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
-          TextBlitKey64(linebuffer+64, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+          if (scanline < 192)
+          {
+            scanline = (scanline + GET_YSCROLL_L1) % 192;
+            uint8_t fgcolor = GET_FG_COL;
+            int screen_width_in_chars = 64;
+            unsigned char * charpt = &memory[VIDEO_START + (scanline/12)*screen_width_in_chars];    
+            unsigned char * fontpt = &font[(scanline%12)*256+(font_reversed?0x800:0x000)];
+            int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
+            TextBlitKey64(linebuffer+64, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);          
+          }
 #endif        
 #ifdef AQUA
-          uint8_t fgcolor = GET_FG_COL;
-          int screen_width_in_chars = 40;
-          unsigned char * charpt = &memory[VIDEO_START + (scanline/8)*screen_width_in_chars];    
-          unsigned char * fontpt = &font[(scanline%8)*256];
-          int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
-          TextBlit40(linebuffer, (scroll>>3)%40, screen_width_in_chars, (uint8_t *)aqua_lut, fontpt, scroll&7, charpt, charpt+0x400);          
+          if (scanline < 192)
+          {
+            scanline = (scanline + GET_YSCROLL_L1) % 192;
+            uint8_t fgcolor = GET_FG_COL;
+            int screen_width_in_chars = 40;
+            unsigned char * charpt = &memory[VIDEO_START + (scanline/8)*screen_width_in_chars];    
+            unsigned char * fontpt = &font[(scanline%8)*256];
+            int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
+            TextBlit40(linebuffer, (scroll>>3)%40, screen_width_in_chars, (uint8_t *)aqua_lut, fontpt, scroll&7, charpt, charpt+0x400);          
+          }
 #endif
 #ifdef ORIC
+          if (scanline < MAXHEIGHT)
+          {
+            scanline = (scanline + GET_YSCROLL_L1) % 224;
+            int screen_width_in_chars = 40;
+            OricBlitKey40(&linebuffer[(320-240)/2], scanline, BG_COL_LINE_ENA?gfxmem[REG_LINES_BG_COL+scanline]:gfxmem[REG_BG_COL]);
+          }
+          else if (scanline < 224)
+          {
+            scanline = (scanline + GET_YSCROLL_L1) % 224;
+            int screen_width_in_chars = 40;
+            OricBlit40(&linebuffer[(320-240)/2], scanline);
+            uint32_t bgcolor32 = (gfxmem[REG_BG_COL]<<24)+(gfxmem[REG_BG_COL]<<16)+(gfxmem[REG_BG_COL]<<8)+(gfxmem[REG_BG_COL]);
+            uint32_t * dst32 = (uint32_t *)linebuffer; 
+            RenderColor(dst32, bgcolor32, (((320-240)/2)/4));
+            dst32 = (uint32_t *)&linebuffer[320-(320-240)/2]; 
+            RenderColor(dst32, bgcolor32, (((320-240)/2)/4));
+
+            //uint8_t fgcolor = 0xff;
+            //int screen_width_in_chars = 40;
+            //unsigned char * charpt = &memory[0xBB80 + (scanline/8)*screen_width_in_chars];    
+            //unsigned char * fontpt = &font[(scanline%8)*256];
+            ////TextBlit40(linebuffer, (scroll>>3)%40, screen_width_in_chars, (uint8_t *)aqua_lut, fontpt, scroll&7, charpt, charpt+0x400);
+            //int scroll = L1_XSCR_LINE_ENA?GET_XSCROLL_L1+( gfxmem[REG_LINES_L1_XSCR+scanline] | ((gfxmem[REG_LINES_XSCR_HI+scanline] & 0xf0)<<4) ):GET_XSCROLL_L1;
+            //TextBlitKey40(linebuffer, charpt, screen_width_in_chars, fgcolor, fontpt, scroll&7, (scroll>>3)%40);
+          }
 #endif
         }
       } 
+      if (scanline < MAXHEIGHT)
+      {
+        // Layer 2
+        if ( (LAYER_L2_ENA) && (!L2_BETWEEN_ENA) )
+        {
+          Sprite16((SPRITE_NUM << 8) + SPRITE_NUM_MAX, screen_width, scanline, (uint8_t *)&SpriteParams[0], (uint8_t *)&SpriteData[0], linebuffer); 
+        }
 
-      // Layer 2
-      if ( (LAYER_L2_ENA) && (!L2_BETWEEN_ENA) )
-      {
-        Sprite16((SPRITE_NUM << 8) + SPRITE_NUM_MAX, screen_width, scanline, (uint8_t *)&SpriteParams[0], (uint8_t *)&SpriteData[0], linebuffer); 
-      }
-
-      // Curtain H
-      uint32_t color32 = 0x00000000;
-      uint32_t * dst32 = (uint32_t *)linebuffer;      
-      if ( HCURTAIN8_ENA )
-      {
-        *dst32++=color32;
-        *dst32=color32;
-      }
-      else if ( HCURTAIN16_ENA ) 
-      {
-        *dst32++=color32;
-        *dst32++=color32;
-        *dst32++=color32;
-        *dst32=color32;
+        // Curtain H
+        uint32_t color32 = 0x00000000;
+        uint32_t * dst32 = (uint32_t *)linebuffer;      
+        if ( HCURTAIN8_ENA )
+        {
+          *dst32++=color32;
+          *dst32=color32;
+        }
+        else if ( HCURTAIN16_ENA ) 
+        {
+          *dst32++=color32;
+          *dst32++=color32;
+          *dst32++=color32;
+          *dst32=color32;
+        }
       }
     }
   } 
@@ -523,7 +836,8 @@ static int __not_in_flash("mystrncpy") mystrncpy( char* dst, const char* src, in
 }
 
 void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
-  if (hyper_enabled) {
+  if (hyper_enabled)
+  { 
     unsigned int nbread; 
     if (cmd_queue_cnt)
     {
@@ -549,190 +863,215 @@ void __not_in_flash("HyperGfxHandleCmdQueue") HyperGfxHandleCmdQueue(void) {
           memset((void*)&Bitmap[0],0, sizeof(Bitmap));
           break;
         case cmd_openfile:
-          nbread = 0;
-          if (fatfs_mounted) {
-            strcat(scratchpad, "/");
-            strcat(scratchpad, &files[cmd.p8_1][0]);
-            if( !(f_open(&file, scratchpad , FA_READ)) ) {
-              //f_read (&file, (void*)&gfxmem[REG_TLOOKUP+1], 255, &nbread);
-              //if (!nbread) f_close(&file);
-              nbread = 1;
+#ifdef ORIC
+          if (gfxmem[REG_HYPGFX] == 1)
+#endif
+          {
+            nbread = 0;
+            if (fatfs_mounted) {
+              strcat(scratchpad, "/");
+              strcat(scratchpad, &files[cmd.p8_1][0]);
+              if( !(f_open(&file, scratchpad , FA_READ)) ) {
+                //f_read (&file, (void*)&gfxmem[REG_TLOOKUP+1], 255, &nbread);
+                //if (!nbread) f_close(&file);
+                nbread = 1;
+              }
             }
+            gfxmem[REG_TLOOKUP] = nbread;
           }
-          gfxmem[REG_TLOOKUP] = nbread;
           break;        
         case cmd_readfile:
-          nbread = 0; 
-          if (fatfs_mounted) {
-            f_read (&file, (void*)&gfxmem[REG_TLOOKUP+1], cmd.p8_1, &nbread);
-            if (!nbread) f_close(&file);
+#ifdef ORIC
+          if (gfxmem[REG_HYPGFX] == 1)
+#endif
+          {
+            nbread = 0; 
+            if (fatfs_mounted) {
+              f_read (&file, (void*)&gfxmem[REG_TLOOKUP+1], cmd.p8_1, &nbread);
+              if (!nbread) f_close(&file);
+            }
+            gfxmem[REG_TLOOKUP] = nbread;
           }
-          gfxmem[REG_TLOOKUP] = nbread;
           break;        
         case cmd_opendir:
-          nbFiles = 0;
-          if (fatfs_mounted) {
-            file_block_wr_pt = 1;
-            if (gfxmem[REG_TLOOKUP] > 0x7f) {
-              gfxmem[REG_TLOOKUP] = 0;
-            }  
-            memcpy((void *)scratchpad, (void *)&gfxmem[REG_TLOOKUP], 256);
-            f_closedir(&dir);
-            fres = f_findfirst(&dir, &entry, scratchpad, "*");
-            gfxmem[REG_TLOOKUP]=0xff;
-            while ( (fres == FR_OK) && (entry.fname[0]) && (nbFiles<MAX_FILES) ) {  
-              if (!entry.fname[0]) {
-                f_closedir(&dir);
-                break;
-              }
-              bool valid = true;
-              char * filename = entry.fname;
-              int size = mystrncpy(&files[nbFiles][0], filename, MAX_FILENAME_SIZE-1); // including eol (0)
-              if (entry.fname[0] != '.' ) { // skip any MACOS file but also ".", ".."
-                // not a directory
-                if ( !(entry.fattrib & AM_DIR) ) {
-  #ifdef PET
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'p' ) && 
-                       (filename[size-3] == 'r' ) && 
-                       (filename[size-2] == 'g' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+#ifdef ORIC
+          if (gfxmem[REG_HYPGFX] == 1)
+#endif
+          {
+            nbFiles = 0;
+            if (fatfs_mounted) {
+              file_block_wr_pt = 1;
+              if (gfxmem[REG_TLOOKUP] > 0x7f) {
+                gfxmem[REG_TLOOKUP] = 0;
+              }  
+              memcpy((void *)scratchpad, (void *)&gfxmem[REG_TLOOKUP], 256);
+              f_closedir(&dir);
+              fres = f_findfirst(&dir, &entry, scratchpad, "*");
+              gfxmem[REG_TLOOKUP]=0xff;
+              while ( (fres == FR_OK) && (entry.fname[0]) && (nbFiles<MAX_FILES) ) {  
+                if (!entry.fname[0]) {
+                  f_closedir(&dir);
+                  break;
+                }
+                bool valid = true;
+                char * filename = entry.fname;
+                int size = mystrncpy(&files[nbFiles][0], filename, MAX_FILENAME_SIZE-1); // including eol (0)
+                if (entry.fname[0] != '.' ) { // skip any MACOS file but also ".", ".."
+                  // not a directory
+                  if ( !(entry.fattrib & AM_DIR) ) {
+    #ifdef PET
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'p' ) && 
+                         (filename[size-3] == 'r' ) && 
+                         (filename[size-2] == 'g' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+                    else   
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'b' ) && 
+                         (filename[size-3] == 'i' ) && 
+                         (filename[size-2] == 'n' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
+                    }
+    #endif
+    #ifdef TRS
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'c' ) && 
+                         (filename[size-3] == 'm' ) && 
+                         (filename[size-2] == 'd' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+    #endif
+    #ifdef AQUA
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'p' ) && 
+                         (filename[size-3] == 'r' ) && 
+                         (filename[size-2] == 'g' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+    #endif
+    #ifdef ORIC
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 't' ) && 
+                         (filename[size-3] == 'a' ) && 
+                         (filename[size-2] == 'p' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+    #endif
+                    else {
+                      valid = false;
+                    }
                   }
-                  else   
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'b' ) && 
-                       (filename[size-3] == 'i' ) && 
-                       (filename[size-2] == 'n' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
-                  }
-  #endif
-  #ifdef TRS
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'c' ) && 
-                       (filename[size-3] == 'm' ) && 
-                       (filename[size-2] == 'd' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
-                  }
-  #endif
-  #ifdef AQUA
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'p' ) && 
-                       (filename[size-3] == 'r' ) && 
-                       (filename[size-2] == 'g' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
-                  }
-  #endif
-  #ifdef ORIC
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'p' ) && 
-                       (filename[size-3] == 'r' ) && 
-                       (filename[size-2] == 'g' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
-                  }
-  #endif
                   else {
-                    valid = false;
+                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
                   }
-                }
-                else {
-                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
-                }
-                if (valid == true) {
-                  file_block_wr_pt += mystrncpy((char*)&gfxmem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
-                  nbFiles++;
-                }  
-              }               
-              fres = f_findnext(&dir, &entry);
+                  if (valid == true) {
+                    file_block_wr_pt += mystrncpy((char*)&gfxmem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
+                    nbFiles++;
+                  }  
+                }               
+                fres = f_findnext(&dir, &entry);
+              }
             }
+            gfxmem[REG_TLOOKUP] = nbFiles;
           }
-          gfxmem[REG_TLOOKUP] = nbFiles;
           break;
         case cmd_readdir:
-          nbFiles = 0;
-          if (fatfs_mounted) {
-            file_block_wr_pt = 1;
-            gfxmem[REG_TLOOKUP]=0xff;
-            while ( (fres == FR_OK) && (entry.fname[0]) && (nbFiles<MAX_FILES) ) {  
-              if (!entry.fname[0]) {
-                f_closedir(&dir);
-                break;
-              }
-              bool valid = true;
-              char * filename = entry.fname;
-              int size = mystrncpy(&files[nbFiles][0], filename, MAX_FILENAME_SIZE-1); // including eol (0)
-              if (entry.fname[0] != '.' ) { // skip any MACOS file but also ".", ".."
-                // not a directory
-                if ( !(entry.fattrib & AM_DIR) ) {
-#ifdef PET
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'p' ) && 
-                       (filename[size-3] == 'r' ) && 
-                       (filename[size-2] == 'g' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
-                  }
-                  else   
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'b' ) && 
-                       (filename[size-3] == 'i' ) && 
-                       (filename[size-2] == 'n' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
-                  }
-#endif
-#ifdef TRS
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'c' ) && 
-                       (filename[size-3] == 'm' ) && 
-                       (filename[size-2] == 'd' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
-                  }
-#endif
-#ifdef AQUA
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'p' ) && 
-                       (filename[size-3] == 'r' ) && 
-                       (filename[size-2] == 'g' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
-                  }
-#endif
 #ifdef ORIC
-                  if ( (size > 4) && 
-                       (filename[size-5] == '.' ) && 
-                       (filename[size-4] == 'p' ) && 
-                       (filename[size-3] == 'r' ) && 
-                       (filename[size-2] == 'g' ) ) {
-                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
-                  }
+          if (gfxmem[REG_HYPGFX] == 1)
 #endif
-                  else {
-                    valid = false;
+          {
+            nbFiles = 0;
+            if (fatfs_mounted) {
+              file_block_wr_pt = 1;
+              gfxmem[REG_TLOOKUP]=0xff;
+              while ( (fres == FR_OK) && (entry.fname[0]) && (nbFiles<MAX_FILES) ) {  
+                if (!entry.fname[0]) {
+                  f_closedir(&dir);
+                  break;
+                }
+                bool valid = true;
+                char * filename = entry.fname;
+                int size = mystrncpy(&files[nbFiles][0], filename, MAX_FILENAME_SIZE-1); // including eol (0)
+                if (entry.fname[0] != '.' ) { // skip any MACOS file but also ".", ".."
+                  // not a directory
+                  if ( !(entry.fattrib & AM_DIR) ) {
+  #ifdef PET
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'p' ) && 
+                         (filename[size-3] == 'r' ) && 
+                         (filename[size-2] == 'g' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+                    else   
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'b' ) && 
+                         (filename[size-3] == 'i' ) && 
+                         (filename[size-2] == 'n' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_ROM;
+                    }
+  #endif
+  #ifdef TRS
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'c' ) && 
+                         (filename[size-3] == 'm' ) && 
+                         (filename[size-2] == 'd' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+  #endif
+  #ifdef AQUA
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 'p' ) && 
+                         (filename[size-3] == 'r' ) && 
+                         (filename[size-2] == 'g' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+  #endif
+  #ifdef ORIC
+                    if ( (size > 4) && 
+                         (filename[size-5] == '.' ) && 
+                         (filename[size-4] == 't' ) && 
+                         (filename[size-3] == 'a' ) && 
+                         (filename[size-2] == 'p' ) ) {
+                      gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_PRG;
+                    }
+  #endif
+                    else {
+                      valid = false;
+                    }
                   }
-                }
-                else {
-                  gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
-                }
-                if (valid == true) {
-                  file_block_wr_pt += mystrncpy((char*)&gfxmem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
-                  nbFiles++;
-                }  
-              }               
-              fres = f_findnext(&dir, &entry); 
+                  else {
+                    gfxmem[REG_TLOOKUP+file_block_wr_pt++] = FILE_IS_DIR;
+                  }
+                  if (valid == true) {
+                    file_block_wr_pt += mystrncpy((char*)&gfxmem[REG_TLOOKUP+file_block_wr_pt], filename, MAX_FILENAME_SIZE-1);
+                    nbFiles++;
+                  }  
+                }               
+                fres = f_findnext(&dir, &entry); 
+              }
             }
+            gfxmem[REG_TLOOKUP] = nbFiles;
           }
-          gfxmem[REG_TLOOKUP] = nbFiles;
           break;     
         default:
           break;
       }
-      gfxmem[REG_TSTATUS] = 0;
+#ifdef ORIC
+      if (gfxmem[REG_HYPGFX] == 1)
+#endif
+      {
+        gfxmem[REG_TSTATUS] = 0;
+      }
     }
   }
 }
@@ -996,7 +1335,8 @@ static void __not_in_flash("traDataFuncPtr") (*traDataFuncPtr[])(uint8_t) = {
 };
 
 void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t value) {
-  if (hyper_enabled) {
+  if (hyper_enabled)
+  {
 #ifdef PET  
     switch (address-0x8000) 
 #endif
@@ -1007,7 +1347,7 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t val
     switch (address-0xe000) 
 #endif
 #ifdef ORIC  
-    switch (address-0x8000) 
+    switch (address-0xc000) 
 #endif
     {  
       case REG_TDEPTH:
@@ -1057,7 +1397,7 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t val
         gfxmem[address-0xe000] = value;
 #endif
 #ifdef ORIC
-        gfxmem[address-0x8000] = value;
+        gfxmem[address-0xc000] = value;
 #endif
         break;
     }
@@ -1073,7 +1413,7 @@ void __not_in_flash("HyperGfxWrite") HyperGfxWrite(uint16_t address, uint8_t val
     gfxmem[address-0xe000] = value;
 #endif
 #ifdef ORIC
-    gfxmem[address-0x8000] = value;
+    gfxmem[address-0xc000] = value;
 #endif
   }     
 }
@@ -1089,19 +1429,20 @@ uint8_t __not_in_flash("HyperGfxread") HyperGfxRead(uint16_t address) {
   return gfxmem[address-0xe000];;
 #endif
 #ifdef ORIC
-  return gfxmem[address-0x8000];
+  return gfxmem[address-0xc000];
 #endif
 }
 
 void __not_in_flash("VideoRenderUpdate") VideoRenderUpdate(void)
 {
-  if (hyper_enabled) {
+  if (hyper_enabled)
+  {
 #ifdef HAS_SND
     sid_dump();  
 #endif
-  
     int vmode = GET_VIDEO_MODE;
-    if (video_mode != vmode) {
+    if ( (video_mode != vmode) || (force_res_change) ) {
+      force_res_change = false;
       if (vmode == 0) {hdmi_init(MODE_VGA_640x240);screen_width=640;}  
       else if (vmode == 1) {hdmi_init(MODE_VGA_320x240);screen_width=320;} 
       else {hdmi_init(MODE_VGA_256x240);screen_width=256;}
@@ -1245,7 +1586,8 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
       aqua_lut[i] = (aqua_palette[i>>4]<<8) + aqua_palette[i&0xf];
     }
 #endif  
-  if (hyper_enabled) {
+  if (hyper_enabled)
+  {
 #ifdef HAS_SND
     if (!sid_initialized) {
       audio_init(1024, audio_fill_buffer);
@@ -1283,8 +1625,9 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
     SET_FG_COL(VGA_RGB(0xc0,0xc0,0x70));
 #endif  
 #ifdef ORIC
-    SET_BG_COL(VGA_RGB(0x00,0x20,0x00));
-    SET_FG_COL(VGA_RGB(0xc0,0xc0,0x70));
+    SET_BG_COL(VGA_RGB(0x00,0x00,0x00));
+    SET_FG_COL(VGA_RGB(0xff,0xff,0xff));
+    memory[REG_HYPGFXENA] = 0;
 #endif  
     // 0: L0 tiles + L1 petfont
     // 1: L0 tiles + L1 tiles
@@ -1326,9 +1669,10 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
     }  
     else {
       SET_VIDEO_MODE(1);
-    }  
+    }
   }
-  else {
+  else 
+  {
     // no hyper GFX, set default GFXmode
     int vmode = 0;
     if (video_default == VMODE_LORES) {
@@ -1341,6 +1685,7 @@ void __not_in_flash("HyperGfxInit") HyperGfxInit(void)
       video_mode = vmode;
     }
   }
+
 
 #ifdef PET
   int cheight = 8;
@@ -1418,8 +1763,9 @@ void HyperGfxFlashFSInit(void)
     }
     //// force lores
     //video_default = VMODE_LORES;
-    //screen_width=320;
+    //screen_width = 320;
 #endif
+
 #ifdef TRS
     // read HYPERTRS.CFG
     if( !(f_open(&file, "HYPERTRS.CFG" , FA_READ)) ) {
@@ -1443,18 +1789,44 @@ void HyperGfxFlashFSInit(void)
       f_close(&file);
     }
 #ifdef HAS_USBHOST          
-    kbd_set_locale(KLAYOUT_BE);
+    kbd_set_locale(KLAYOUT_BE); // to be removed
 #endif
 #endif
-  }
+
 #ifdef AQUA
-  video_default = VMODE_LORES;
-  screen_width=320;
+    video_default = VMODE_LORES;
+    screen_width=320;
 #endif
 #ifdef ORIC
-  video_default = VMODE_LORES;
-  screen_width=320;
+    // read HYPERTRS.CFG
+    if( !(f_open(&file, "HYPERORIC.CFG" , FA_READ)) ) {
+      while (f_gets(scratchpad, 256, &file) != NULL)  {
+        if (!strncmp(scratchpad, "ram=", 4)) {
+          if ( (scratchpad[4]=='8') && (scratchpad[4]=='0') ) {
+          }
+        }
+        else 
+        if (!strncmp(scratchpad, "keyboard=", 9)) {
+#ifdef HAS_USBHOST          
+          if ( ( scratchpad[9]=='u') && (scratchpad[10]=='k') ) {
+            kbd_set_locale(KLAYOUT_UK);
+          }
+          else if ( ( scratchpad[9]=='b') && (scratchpad[10]=='e') ) {
+            kbd_set_locale(KLAYOUT_BE);
+          }
+#endif 
+        }
+      }
+      f_close(&file);
+    }
+#ifdef HAS_USBHOST          
+    kbd_set_locale(KLAYOUT_BE); // to be removed
 #endif
+  // force LORES
+  video_default = VMODE_LORES;
+  screen_width = 320;
+#endif
+  }
 }
 
 void __not_in_flash("HyperGfxReset") HyperGfxReset(void)
@@ -1466,32 +1838,40 @@ void __not_in_flash("HyperGfxHandleGfx") HyperGfxHandleGfx(void)
 {
   int scanline = 0;
   //hdmi_wait_line(8);
-  for (int i = 8; i < 408; i = i + 2) {
+  for (int i = 8; i < (224*2+8); i = i + 2) {
       hdmi_wait_line(i);
       uint8_t * linebuffer = hdmi_get_line_buffer(scanline);
-      if (hyper_enabled) {     
+      if (hyper_enabled)
+      {  
         gfxmem[REG_VSYNC] = scanline;
       }
       cur_scanline = scanline;
-      VideoRenderLineBG(linebuffer, scanline);            
-      VideoRenderLineL0(linebuffer, scanline);
-#ifdef TRS             
-      if (scanline < 192)
-#endif
+      if (scanline < MAXHEIGHT)
+      {
+        VideoRenderLineBG(linebuffer, scanline);            
+        VideoRenderLineL0(linebuffer, scanline);
+      }
       VideoRenderLineL1(linebuffer, scanline);
       scanline++;
   }
-  if (hyper_enabled) {     
+  frame_count = frame_count + 1;
+  if (hyper_enabled)
+  {
+#ifdef ORIC  
+    gfxmem[REG_VSYNC] = 224;
+#else
     gfxmem[REG_VSYNC] = MAXHEIGHT;
+#endif    
   }
-  cur_scanline = MAXHEIGHT;
+  cur_scanline = gfxmem[REG_VSYNC];
   if (gfx_reset) {
     gfx_reset = false;
     HyperGfxInit();
   }
   VideoRenderUpdate();
 #ifdef HAS_SND
-  if (hyper_enabled) {
+  if (hyper_enabled)
+  {  
     audio_handle();
   }
 #endif  
